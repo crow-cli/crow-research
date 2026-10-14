@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable, Optional, Sequence
 
 from .agent import Workflow
 from .roles import Role
+from .todo import Todo, parse_new_items, parse_updates, parse_verdict
 from .turn import Turn, TurnCancelled
 
 #: The interagent compaction prompt — an agent asked to summarize itself for a
@@ -124,5 +125,169 @@ def select(
         first = await picker(turn)
         rest = [r for r in roles if r.name != first.name]
         return await chain(first, *rest, **kwargs)(turn)
+
+    return workflow
+
+
+# -- the pipeline -------------------------------------------------------
+#
+# worker -> verifier, until the verifier signs off AND the todo list is
+# complete. Then the explorer adds more items to the todo. Then it goes round
+# again: the loop does not stop by itself.
+
+WORKER_PROMPT = """The todo list is the work.
+
+{todo}
+
+{findings}Claim items, do them, and report. Report format:
+
+* One `TODO <id> <state> <note>` line for every item you touched, where state is
+  `working` (claimed, not finished), `done` (finished and checked), `open` (not
+  started, or handed back) or `blocked` (cannot be done, say why in the note).
+* Then your report: what you changed, the exact commands you ran, and what they
+  returned. A verifier that never saw this work reads only that report.
+"""
+
+VERIFIER_PROMPT = """Verify the worker's pass. You did not write it and you do not fix it.
+
+{todo}
+
+The worker reported:
+
+{report}
+
+Report format:
+
+* One `TODO <id> <state> <note>` line for every item whose state you dispute —
+  `open` with the finding in the note when a `done` claim did not reproduce.
+* Your findings, each with the exact command and its exact output.
+* Last line: `VERDICT: PASS`, `VERDICT: FAIL` or `VERDICT: UNVERIFIED`.
+"""
+
+EXPLORER_PROMPT = """The pipeline is idle: the verifier signed off and the todo list is complete.
+
+{todo}
+
+The verifier's last word: {verdict}
+
+{report}
+
+Go and find what this work makes possible — the prior art it should have used,
+the gap it leaves, the next thing worth building on top of it. Report format:
+
+* One `ADD <text>` line per new todo item, in the order they should be done.
+* Then your findings, with a URL and commit or tag for every source.
+"""
+
+
+def _findings_block(verifier_report: str) -> str:
+    if not verifier_report.strip():
+        return ""
+    return f"The verifier's findings on the last pass:\n\n{verifier_report.strip()}\n\n"
+
+
+def apply_updates(todo: Any, report: str, *, by: str) -> list[str]:
+    """Write an agent's `TODO <id> <state>` lines back onto the list.
+
+    An id that is not on the list is reported upstream rather than dropped: an
+    agent inventing an id is a real event, and a silently ignored line is a list
+    that quietly stops matching what the agents think it says.
+    """
+    applied: list[str] = []
+    for item_id, state, note in parse_updates(report):
+        try:
+            todo.set(item_id, state, note)
+        except KeyError:
+            applied.append(f"todo {item_id} does not exist ({by} claimed it)")
+            continue
+        applied.append(f"todo {item_id} -> {state}")
+    return applied
+
+
+def pipeline(
+    worker: Role,
+    verifier: Role,
+    explorer: Role,
+    todo: Todo,
+    *,
+    timeout: Optional[float] = None,
+    max_review: int = 5,
+    announce: bool = True,
+) -> Workflow:
+    """The loop: worker -> verifier until sign-off on a complete list, then the
+    explorer adds more items, then round again. It does not end by itself;
+    ``session/cancel`` ends it.
+
+    ``max_review`` bounds one round's worker/verifier exchange, not the loop. A
+    pair that cannot agree still falls through to the explorer, so a stuck round
+    costs a round instead of the run.
+    """
+
+    async def workflow(turn: Turn) -> Optional[str]:
+        last: Optional[str] = None
+        verdict: Optional[str] = None
+        verifier_report = ""
+        round_no = 0
+        while True:
+            turn._check()
+            round_no += 1
+            # -- worker -> verifier, until the verifier signs off on a complete list
+            for _attempt in range(max_review):
+                turn._check()
+                if verdict == "PASS" and todo.complete:
+                    break
+                if announce:
+                    await turn.notice(
+                        f"round {round_no} · {worker.label}",
+                        description=f"{len(todo.pending())} pending · last verdict {verdict or 'none'}",
+                    )
+                worker_result = await turn.run(
+                    worker,
+                    WORKER_PROMPT.format(todo=todo.render(), findings=_findings_block(verifier_report)),
+                    timeout=timeout,
+                )
+                last = worker_result.stop_reason
+                for line in apply_updates(todo, worker_result.report, by=worker.name):
+                    await turn.notice(line, severity="warning" if "does not exist" in line else "info")
+
+                turn._check()
+                if announce:
+                    await turn.notice(f"round {round_no} · {verifier.label}", description="signing off on the pass")
+                verifier_result = await turn.run(
+                    verifier,
+                    VERIFIER_PROMPT.format(todo=todo.render(), report=worker_result.report),
+                    timeout=timeout,
+                )
+                last = verifier_result.stop_reason
+                for line in apply_updates(todo, verifier_result.report, by=verifier.name):
+                    await turn.notice(line, severity="warning" if "does not exist" in line else "info")
+                verifier_report = verifier_result.report
+                verdict = parse_verdict(verifier_report)
+                if announce:
+                    await turn.notice(
+                        f"round {round_no} · verdict {verdict or 'UNREPORTED'}",
+                        description=todo.render(only_pending=True).splitlines()[0],
+                        severity="info" if verdict == "PASS" else "warning",
+                    )
+
+            # -- the explorer adds more items to the todo
+            turn._check()
+            if announce:
+                await turn.notice(f"round {round_no} · {explorer.label}", description="adding work to the todo")
+            explorer_result = await turn.run(
+                explorer,
+                EXPLORER_PROMPT.format(
+                    todo=todo.render(), verdict=verdict or "UNREPORTED", report=_findings_block(verifier_report)
+                ),
+                timeout=timeout,
+            )
+            last = explorer_result.stop_reason
+            added = todo.extend(parse_new_items(explorer_result.report), by=explorer.name)
+            if announce:
+                await turn.notice(
+                    f"round {round_no} · {explorer.label} added {len(added)} items",
+                    description="; ".join(i.text[:60] for i in added) or "nothing added — the loop continues",
+                )
+            verdict, verifier_report = None, ""
 
     return workflow

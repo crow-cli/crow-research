@@ -71,6 +71,7 @@ class OrchestratorAgent:
         version: str = "0.1.0",
         default_cwd: Optional[str] = None,
         autostart: Optional[str] = None,
+        mcp_servers: Optional[list[Any]] = None,
     ) -> None:
         """``autostart`` is the always-on switch: a prompt to begin working on
         the moment a session opens, without waiting for anybody to send one. v2
@@ -83,6 +84,10 @@ class OrchestratorAgent:
         self.version = version
         self.default_cwd = default_cwd
         self.autostart = autostart
+        #: What the children get when the upstream client sent no tool supply.
+        #: ``None`` means "resolve crow's own config, once, on first need" — see
+        #: :meth:`_tool_supply`.
+        self.mcp_servers = mcp_servers
         self.conn: Optional[v2.AgentSideConnection] = None
         self.sessions: dict[str, Session] = {}
         self._ids = itertools.count(1)
@@ -223,11 +228,32 @@ class OrchestratorAgent:
             list(blocks),
             self._emit,
             cwd=session.cwd,
-            mcp_servers=session.mcp_servers,
+            mcp_servers=self._tool_supply(session),
         )
         session.turn = turn
         session.task = asyncio.create_task(self._run(session, turn), name=f"turn-{session.session_id}")
         return message_id
+
+    def _tool_supply(self, session: Session) -> list[Any]:
+        """The tools the children of this turn get.
+
+        The upstream client's list wins — it is the one that knows what this
+        machine may run. But an *empty* list is an omission, not a choice: a v2
+        agent with no ``mcp_servers`` has no tools at all, so every child we
+        spawn would be able to do nothing but talk, and would report that as a
+        finding about the task rather than about its harness. So the fallback is
+        crow's own configured supply, resolved once and kept.
+
+        ``mcp_servers=[]`` passed to the constructor is honored as "no tools",
+        which is what a model-less child (the stub agent in ``examples/``) wants.
+        """
+        if session.mcp_servers:
+            return session.mcp_servers
+        if self.mcp_servers is None:
+            from .mcp import from_config  # local: the core stays importable without crow-cli
+
+            self.mcp_servers = from_config()
+        return self.mcp_servers
 
     async def _run(self, session: Session, turn: Turn) -> None:
         """The overwritten react loop: announce, work, report, clean up."""
