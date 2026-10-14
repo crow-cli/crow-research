@@ -84,6 +84,7 @@ class PeerClient:
 
     async def session_update(self, session_id: str, update: Any, **kwargs: Any) -> None:
         self.updates.append(update)
+        self.peer.turn.updates.append(update)
         await self.peer.relay(update, kwargs)
         kind = getattr(update, "session_update", None)
         if kind == "agent_message_chunk":

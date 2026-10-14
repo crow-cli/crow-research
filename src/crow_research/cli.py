@@ -40,7 +40,7 @@ def serve_argv(args: argparse.Namespace) -> list[str]:
         argv += ["--compact"]
     if args.rounds is not None:
         argv += ["--rounds", str(args.rounds)]
-    if args.autostart:
+    if getattr(args, "autostart", None):  # `run` sends its own prompt, so it never autostarts
         argv += ["--autostart", args.autostart]
     return argv
 
