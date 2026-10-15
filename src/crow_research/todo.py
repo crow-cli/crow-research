@@ -88,6 +88,20 @@ class Todo:
                 return item
         raise KeyError(f"no todo item {item_id}")
 
+    def get(self, item_id: int) -> Optional[Item]:
+        """The item with that id, or ``None`` when it is not on the list.
+
+        The quiet sibling of :meth:`__getitem__`: an unknown id comes back as
+        ``None`` instead of a ``KeyError``, for callers that ask before they
+        act. Lookup follows the list, not the id counter — a removed item's
+        id reads as ``None`` immediately, and an id the counter has not handed
+        out yet never reads as anything at all.
+        """
+        try:
+            return self[item_id]
+        except KeyError:
+            return None
+
     # -- queries --------------------------------------------------------
 
     def pending(self) -> list[Item]:

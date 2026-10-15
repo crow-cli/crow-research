@@ -154,6 +154,35 @@ def test_remove_does_not_reuse_ids() -> None:
     assert todo.add("c").id == 3  # ids never walk backwards
 
 
+# -- get ---------------------------------------------------------------
+
+
+def test_get_returns_the_item_for_a_known_id() -> None:
+    todo = Todo()
+    a = todo.add("a")
+    b = todo.add("b")
+    assert todo.get(a.id) is a
+    assert todo.get(b.id) is b
+    todo.set(a.id, DONE, "finished")
+    assert todo.get(a.id) is a  # any state, not just pending
+
+
+def test_get_is_none_for_unknown_or_removed_ids() -> None:
+    todo = Todo()
+    item = todo.add("a")
+    todo.remove(item.id)
+    assert todo.get(item.id) is None  # removed ids stop being findable immediately
+    assert todo.get(99) is None  # unknown ids are absent, never a KeyError
+    assert todo.get("1") is None  # wrong type is just not there
+
+
+def test_get_is_none_before_the_id_exists() -> None:
+    todo = Todo()
+    assert todo.get(1) is None
+    item = todo.add("a")
+    assert todo.get(item.id) is item
+
+
 # -- pending / claimed / complete -------------------------------------
 
 
