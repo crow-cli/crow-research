@@ -18,7 +18,7 @@ rich rendering — with the three things v2 changes:
 Usage::
 
     client = ReplClient(sys.executable, "agents/orchestrator_agent.py", cwd=".")
-    await client.send("ADD fix the parser")     # the prompt goes to the workflow
+    await client.send("fix the parser")         # the prompt goes to the workflow
     print(client.conversation[client.session_id])
     await client.close()
 
@@ -360,7 +360,7 @@ async def _amain(argv: list[str]) -> int:
         prog="python -m crow_research.repl_client",
         description=__doc__.splitlines()[0],
         epilog="The positionals are the agent command, exactly as ReplClient(cmd, *args) takes it: "
-               "python -m crow_research.repl_client -p 'ADD fix the parser' "
+               "python -m crow_research.repl_client -p 'fix the parser' "
                f"{sys.executable} agents/orchestrator_agent.py --debug",
     )
     parser.add_argument("command", nargs="*", help=f"the agent to spawn (default: {DEFAULT_AGENT})")

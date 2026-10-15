@@ -1,13 +1,22 @@
-"""Unit tests for the shared todo list and its report parsers.
+"""Unit tests for the shared todo list and the file it lives in.
 
-The todo list is the only data structure the three agents share, and the
-parsers are the only protocol for getting state back out of agent prose. These
-tests pin the small surface of :mod:`crow_research.todo`: the mutation and query
-methods, the render format that is the wire contract, and the deliberately dumb
-parsers (dumb on purpose, so an agent that rambles cannot corrupt the list).
+The list is the only data structure the three agents share, and the JSON file is
+the only protocol between them: the agents write it, the orchestrator reads it,
+and nothing parses anybody's prose. These tests pin the small surface of
+:mod:`crow_research.todo` — the mutation and query methods, the render format
+the agents are shown, the document shape, and what a document has to get wrong
+to be refused.
+
+The refusal cases matter more than they look. A file that does not parse is
+announced upstream and the last good copy goes back; a file that parses but
+means something else is a list the loop can never finish.
 """
 
 from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -15,12 +24,11 @@ from crow_research.todo import (
     BLOCKED,
     DONE,
     OPEN,
+    STATE_FILE,
     WORKING,
     Item,
     Todo,
-    parse_new_items,
-    parse_updates,
-    parse_verdict,
+    state_path,
 )
 
 
@@ -271,136 +279,208 @@ def test_render_only_pending() -> None:
     )
 
 
-# -- parse_updates -----------------------------------------------------
+# -- the document ------------------------------------------------------
 
 
-def test_parse_updates_returns_id_state_note_triples() -> None:
-    report = "TODO 3 done built the parser, tests pass\nTODO 5 open still crashes on empty input"
-    assert parse_updates(report) == [
-        (3, DONE, "built the parser, tests pass"),
-        (5, OPEN, "still crashes on empty input"),
-    ]
+def test_to_dict_is_the_document() -> None:
+    todo = Todo()
+    todo.add("make the thing", by="prompt")
+    todo.set(1, DONE, "built it")
+    todo.verdict, todo.verdict_note = "PASS", "every claim reproduced"
+    assert todo.to_dict() == {
+        "verdict": "PASS",
+        "verdict_note": "every claim reproduced",
+        "items": [
+            {"id": 1, "text": "make the thing", "state": DONE, "note": "built it", "added_by": "prompt"}
+        ],
+    }
 
 
-def test_parse_updates_note_is_optional() -> None:
-    assert parse_updates("TODO 4 blocked") == [(4, BLOCKED, "")]
-    assert parse_updates("TODO 4 working\n") == [(4, WORKING, "")]
+def test_round_trip_preserves_the_list() -> None:
+    todo = Todo()
+    todo.add("a", by="prompt")
+    todo.add("b", by="explorer")
+    todo.set(2, BLOCKED, "needs a human")
+    todo.verdict, todo.verdict_note = "FAIL", "one finding"
+    assert Todo.from_dict(todo.to_dict()) == todo
 
 
-def test_parse_updates_is_case_insensitive() -> None:
-    assert parse_updates("todo 7 Done x") == [(7, DONE, "x")]
+def test_from_dict_fills_in_what_an_agent_omitted() -> None:
+    """Only `id` and `text` are not optional. An agent editing the file by hand
+    should not have to write the three keys that are empty anyway."""
+    todo = Todo.from_dict({"items": [{"id": 3, "text": "  a thing  "}]})
+    assert todo.items == [Item(3, "a thing", OPEN, "", "")]
+    assert todo.verdict is None
+    assert todo.verdict_note == ""
 
 
-def test_parse_updates_ignores_prose_and_malformed_lines() -> None:
-    report = "\n".join(
-        [
-            "I did the thing and here is my reasoning",
-            "TODO not-a-number done x",
-            "TODO 2 frobnicate x",
-            "TODO 3",  # missing state
-            "DONE 4 stuff",
-            "TODO 5 done",  # the only valid line
-        ]
-    )
-    assert parse_updates(report) == [(5, DONE, "")]
+def test_from_dict_keeps_counting_past_the_highest_id() -> None:
+    """Ids are never reused, and a loaded list has to know that: the next item
+    must not collide with one an agent is still holding a reference to."""
+    assert Todo.from_dict({"items": [{"id": 7, "text": "a"}]}).add("b").id == 8
+    assert Todo.from_dict({"items": []}).add("b").id == 1
 
 
-# -- parse_new_items ---------------------------------------------------
+def test_from_dict_normalizes_case_but_not_spelling() -> None:
+    """Case is a typing habit and an agent's write is worth more than one; an
+    invented state or verdict is a different contract, and that is refused."""
+    assert Todo.from_dict({"items": [{"id": 1, "text": "a", "state": "Done"}]}).items[0].state == DONE
+    assert Todo.from_dict({"verdict": "pass", "items": []}).verdict == "PASS"
+    assert Todo.from_dict({"verdict": "Unverified", "items": []}).verdict == "UNVERIFIED"
+    assert Todo.from_dict({"verdict": None, "items": []}).verdict is None
 
 
-def test_parse_new_items_in_order() -> None:
-    report = "ADD write the parser\nADD ship it\nADD"
-    assert parse_new_items(report) == ["write the parser", "ship it"]
+def test_an_agent_written_document_loads() -> None:
+    """What an agent actually leaves behind: keys in its own order, a verdict it
+    set, an item it appended with a hand-computed id, and none of the optional
+    keys it did not feel like writing."""
+    doc = """{
+  "items": [
+    {"id": 1, "text": "make the thing", "state": "done", "note": "built it", "added_by": "prompt"},
+    {"id": 2, "text": "write the docs", "added_by": "explorer"}
+  ],
+  "verdict": "PASS",
+  "verdict_note": "every claim reproduced"
+}"""
+    todo = Todo.from_dict(json.loads(doc))
+    assert todo.verdict == "PASS"
+    assert todo.complete is False
+    assert todo.render(only_pending=True) == "TODO (1 pending / 2 total)\n2. [ ] write the docs"
+    assert todo.add("next").id == 3
 
 
-def test_parse_new_items_is_case_insensitive_and_strips() -> None:
-    assert parse_new_items("add  leading space  ") == ["leading space"]
+# -- refusing a document -----------------------------------------------
 
 
-def test_parse_new_items_ignores_prose_and_blank() -> None:
-    report = "here are some thoughts\nADD\nADD   \nnot an add line"
-    assert parse_new_items(report) == []
+def test_from_dict_refuses_anything_that_is_not_the_contract() -> None:
+    for doc in (
+        [],
+        "todo",
+        3,
+        None,
+        {"items": {}},
+        {"items": "1. a thing"},
+        {"items": [3]},
+        {"items": [{"text": "no id"}]},
+        {"items": [{"id": "1", "text": "a"}]},
+        {"items": [{"id": True, "text": "a"}]},
+        {"items": [{"id": 1.5, "text": "a"}]},
+        {"items": [{"id": 1}]},
+        {"items": [{"id": 1, "text": ""}]},
+        {"items": [{"id": 1, "text": "   "}]},
+        {"items": [{"id": 1, "text": "a", "state": "wip"}]},
+        {"items": [{"id": 1, "text": "a", "state": 3}]},
+        {"items": [{"id": 1, "text": "a", "note": 3}]},
+        {"items": [{"id": 1, "text": "a", "added_by": None}]},
+        {"items": [{"id": 1, "text": "a"}, {"id": 1, "text": "b"}]},
+        {"verdict": "MAYBE", "items": []},
+        {"verdict": "", "items": []},
+        {"verdict": 1, "items": []},
+        {"verdict_note": 3, "items": []},
+    ):
+        with pytest.raises(ValueError):
+            Todo.from_dict(doc)
 
 
-# -- parse_verdict -----------------------------------------------------
+def test_from_dict_says_what_is_wrong() -> None:
+    """The message is announced upstream to whoever is watching the run, so it
+    names the item and the field instead of reporting a shape."""
+    with pytest.raises(ValueError, match="item 2 has state 'wip'"):
+        Todo.from_dict({"items": [{"id": 2, "text": "a", "state": "wip"}]})
+    with pytest.raises(ValueError, match="two items claim id 1"):
+        Todo.from_dict({"items": [{"id": 1, "text": "a"}, {"id": 1, "text": "b"}]})
+    with pytest.raises(ValueError, match="verdict is 'MAYBE'"):
+        Todo.from_dict({"verdict": "MAYBE", "items": []})
+    with pytest.raises(ValueError, match="item 3 has no text"):
+        Todo.from_dict({"items": [{"id": 3, "text": "a"}, {"id": 3, "text": ""}]})
 
 
-def test_parse_verdict_returns_word() -> None:
-    assert parse_verdict("VERDICT: PASS") == "PASS"
-    assert parse_verdict("VERDICT: fail") == "FAIL"
-    assert parse_verdict("VERDICT: unverified") == "UNVERIFIED"
+# -- save / load -------------------------------------------------------
 
 
-def test_parse_verdict_none_when_absent() -> None:
-    assert parse_verdict("no verdict here") is None
-    assert parse_verdict("") is None
-    assert parse_verdict(None) is None
+def test_save_then_load_round_trips() -> None:
+    todo = Todo()
+    todo.add("make the thing", by="prompt")
+    todo.set(1, WORKING, "claimed")
+    todo.verdict = "UNVERIFIED"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = state_path(tmp)
+        assert not path.exists()
+        assert todo.save(path) == path
+        assert Todo.load(path) == todo
 
 
-def test_parse_verdict_last_one_wins() -> None:
-    assert parse_verdict("VERDICT: FAIL\nVERDICT: PASS") == "PASS"
-    assert parse_verdict("VERDICT: PASS\nVERDICT: FAIL") == "FAIL"
+def test_save_creates_the_directory_and_leaves_no_temporary_behind() -> None:
+    """Atomic means a temporary and a rename, and the rename means the reader
+    never sees a half-written document — nor the file it came from."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = state_path(tmp)
+        Todo().save(path)
+        assert [p.name for p in path.parent.iterdir()] == ["todo.json"]
 
 
-def test_parse_verdict_accepts_markdown_heading_prefixes() -> None:
-    assert parse_verdict("## Verdict: PASS") == "PASS"
-    assert parse_verdict("#* Verdict: FAIL") == "FAIL"
-    assert parse_verdict("# Verdict: UNVERIFIED") == "UNVERIFIED"
+def test_save_overwrites_in_place() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = state_path(tmp)
+        todo = Todo()
+        todo.add("a")
+        todo.save(path)
+        todo.set(1, DONE)
+        todo.save(path)
+        assert Todo.load(path).complete
 
 
-def test_parse_verdict_ignores_unknown_or_empty_words() -> None:
-    assert parse_verdict("VERDICT: MAYBE") is None
-    assert parse_verdict("VERDICT:") is None
-    assert parse_verdict("VERDICT: PASS\nVERDICT:") == "PASS"
+def test_save_writes_indented_json_an_agent_can_patch() -> None:
+    """``indent=2`` is not cosmetics. The agents edit this file with the same
+    tool they edit source with, and a document on one line is a document an
+    agent has to regenerate from memory to change one field of."""
+    todo = Todo()
+    todo.add("a thing")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = state_path(tmp)
+        todo.save(path)
+        text = path.read_text()
+        assert text.startswith('{\n  "verdict": null,')
+        assert '"text": "a thing"' in text
+        assert text.endswith("}\n")
 
 
-# -- markdown decoration ------------------------------------------------
-#
-# The prompts show the report format inside backticks, so the models echo it
-# inside backticks. Run 3's worker reported the line below verbatim and the list
-# never moved: the verifier signed off with `VERDICT: PASS`, the item it signed
-# off on was still pending, and the round could not end.
+def test_load_raises_on_a_truncated_file() -> None:
+    """``JSONDecodeError`` is a ``ValueError``, which is what lets the pipeline
+    catch it, announce it, and put the last good copy back — instead of reading
+    an empty list and starting the run over."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = state_path(tmp)
+        path.parent.mkdir(parents=True)
+        path.write_text('{"items": [{"id": 1, ')
+        with pytest.raises(ValueError):
+            Todo.load(path)
 
 
-def test_parse_updates_reads_a_backtick_wrapped_line() -> None:
-    report = "`TODO 1 done added Todo.__contains__ with membership tests; full suite green`"
-    assert parse_updates(report) == [
-        (1, DONE, "added Todo.__contains__ with membership tests; full suite green")
-    ]
+def test_load_raises_on_a_missing_file() -> None:
+    """Not an empty list. Whether the file is absent is the caller's business:
+    the pipeline seeds it, and anything else is a wrong path."""
+    with tempfile.TemporaryDirectory() as tmp:
+        with pytest.raises(FileNotFoundError):
+            Todo.load(state_path(tmp))
 
 
-def test_parse_updates_reads_decoration_around_the_keyword_and_state() -> None:
-    report = "\n".join(
-        [
-            "**TODO 2 done** bolded, then commentary",
-            "- TODO 3 blocked cannot run",
-            "> TODO 4 working quoted",
-        ]
-    )
-    assert parse_updates(report) == [
-        (2, DONE, "bolded, then commentary"),
-        (3, BLOCKED, "cannot run"),
-        (4, WORKING, "quoted"),
-    ]
+def test_load_refuses_a_well_formed_document_that_breaks_the_contract() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = state_path(tmp)
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"items": [{"id": 1, "text": "a", "state": "finished"}]}))
+        with pytest.raises(ValueError, match="state 'finished'"):
+            Todo.load(path)
 
 
-def test_parse_new_items_reads_a_decorated_add_line() -> None:
-    assert parse_new_items("`ADD write the docs`") == ["write the docs"]
-    assert parse_new_items("**ADD** search the prior art") == ["search the prior art"]
+# -- state_path --------------------------------------------------------
 
 
-def test_parse_verdict_reads_a_decorated_verdict() -> None:
-    assert parse_verdict("`VERDICT: PASS`") == "PASS"
-    assert parse_verdict("**VERDICT**: FAIL") == "FAIL"
-    assert parse_verdict("VERDICT: `UNVERIFIED`") == "UNVERIFIED"
-
-
-def test_decoration_does_not_let_prose_or_junk_through() -> None:
-    assert parse_updates("`the word TODO 9 done appears mid-sentence`") == []
-    assert parse_updates("`TODO not-a-number done x`") == []
-    assert parse_updates("`TODO 5 frobnicate x`") == []
-    assert parse_new_items("`not an add line`") == []
-    assert parse_verdict("`VERDICT: MAYBE`") is None
+def test_state_path_is_under_the_working_directory() -> None:
+    assert STATE_FILE == ".crow-research/todo.json"
+    assert state_path("/work") == Path("/work/.crow-research/todo.json")
+    assert state_path(Path("/work")) == state_path("/work")
 
 
 def _main() -> int:

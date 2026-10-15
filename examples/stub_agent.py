@@ -10,16 +10,22 @@ carried the previous agent's report into the next one.
 ``python examples/stub_agent.py <name>`` — the name is what it says it is, so a
 cast of stubs is distinguishable in the relayed stream without any env plumbing.
 ``STUB_DELAY`` seconds of sleep before it answers makes cancellation testable,
-and ``STUB_REPLY_<NAME>`` (or ``STUB_REPLY``) replaces the echo with a scripted
-report, which is how a test gives each role the words the pipeline parses.
+``STUB_REPLY_<NAME>`` (or ``STUB_REPLY``) replaces the echo with a scripted
+report, and ``STUB_STATE_<NAME>`` (or ``STUB_STATE``) is a JSON document
+deep-merged into ``STUB_STATE_PATH`` before the stub goes idle — which is how a
+test scripts what an agent *writes*, as opposed to what it says. The pipeline
+reads the file and nothing else, so a test that only scripted replies would be
+testing a stub talking to itself.
 """
 
 from __future__ import annotations
 
 import asyncio
 import itertools
+import json
 import os
 import sys
+from pathlib import Path
 from typing import Any, Optional
 
 from acp.experimental import v2
@@ -27,6 +33,35 @@ from acp.experimental import v2
 
 def _text(prompt: list[Any]) -> str:
     return " ".join(str(getattr(b, "text", "") or "") for b in prompt).strip()
+
+
+def _merge_state(path: str, patch: str) -> None:
+    """Deep-merge a JSON patch into the state file, the way an agent edits it.
+
+    Items carrying an ``id`` update the item that has it, items without one are
+    appended under the next free id, and every other key overwrites. A merge
+    rather than a write so a cast scripted through one shared environment cannot
+    have its second role erase what the first one did — which is the property the
+    real file has, and the reason there is a file.
+    """
+    file = Path(path)
+    doc: Any = json.loads(file.read_text()) if file.exists() else {}
+    items = doc.setdefault("items", [])
+    for key, value in json.loads(patch).items():
+        if key != "items":
+            doc[key] = value
+            continue
+        for entry in value:
+            if "id" not in entry:
+                entry = {**entry, "id": max((i.get("id", 0) for i in items), default=0) + 1}
+            for existing in items:
+                if existing.get("id") == entry["id"]:
+                    existing.update(entry)
+                    break
+            else:
+                items.append(entry)
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text(json.dumps(doc, indent=2) + "\n")
 
 
 class StubAgent:
@@ -80,8 +115,8 @@ class StubAgent:
             await asyncio.sleep(delay)
         # A scripted reply, per role: ``STUB_REPLY_WORKER`` beats ``STUB_REPLY``
         # beats the echo. One shared env can then give a whole cast different
-        # words, which is what a pipeline test needs — the worker has to say
-        # ``TODO 1 done`` and the verifier ``VERDICT: PASS`` in the same run.
+        # words, which is what a pipeline test needs — the worker has to hand
+        # the verifier something to check, in the same run.
         reply = os.environ.get(f"STUB_REPLY_{self.name.upper()}") or os.environ.get("STUB_REPLY")
         if reply is None:
             reply = f"{self.name} heard: {heard[:4000]}"
@@ -96,6 +131,12 @@ class StubAgent:
                 status="completed",
             )
         )
+        # The write, before the idle: the orchestrator reads the file back when
+        # the turn ends, so a patch that landed after this would be read by
+        # whoever goes next instead of by the reload that reports it.
+        patch = os.environ.get(f"STUB_STATE_{self.name.upper()}") or os.environ.get("STUB_STATE")
+        if patch and (state := os.environ.get("STUB_STATE_PATH")):
+            _merge_state(state, patch)
         await emit(v2.schema.IdleSessionStateUpdate(stop_reason="end_turn"))
 
     async def cancel_session(self, session_id: str, **kw: Any) -> None:

@@ -37,12 +37,12 @@ WORKFLOW = """
 2. COLLECT: Clone the interesting repositories into your scratch directory and read them — the README, then the tests, then the part that matters. Tests are the honest documentation. For papers, get the method and the numbers, not the abstract.
 3. COMPARE: Line the candidates up against each other and against what we already have. License, activity, dependencies, whether the hard part is actually solved or stubbed, and what it cost them to get there.
 4. PROBE: When a claim matters and is cheap to check, check it — install it, run its example, time it. "The docs say" is a rumor; "I ran it and got" is a finding.
-5. SYNTHESIZE: Report the prior art, the gap it leaves, and one concrete recommendation with the tradeoff stated. Say what you did not have time to look at, so the next explorer starts there instead of repeating you.
+5. SYNTHESIZE: Write the work you found into the state file as items — one item per thing an agent can finish in a turn, in the order they should be done, each one phrased so a worker with none of your context knows what to do. Then report the prior art, the gap it leaves, and one concrete recommendation with the tradeoff stated. Say what you did not have time to look at, so the next explorer starts there instead of repeating you.
 """
 
 FILE_SYSTEM = """
 * Everything you clone, download, or generate goes in a scratch directory outside the repo you were pointed at — `/tmp/explore-<something-identifiable>` — never inside it, and never as a sibling that a `git status` would pick up.
-* Do not modify the repo under exploration. You are a reader there. Your one output is your final message.
+* Do not modify the repo under exploration. You are a reader there. Your outputs are the items you append to the state file the dispatch prompt names, and your final message.
 * Shallow-clone (`git clone --depth 1`) unless history is the thing you are studying; a full clone of a large repo is a minute of your budget spent on nothing.
 * Clean up the scratch directory when the findings are written, unless the caller asked you to keep it.
 """
@@ -58,8 +58,14 @@ SERVICES = """
 """
 
 FINDINGS = """
-Your final message is machine-read by the orchestrator that dispatched you and
-human-read by whoever is watching the stream. Both need the same shape:
+The work you find goes into the state file the dispatch prompt names, as new
+items — not into your message. That file is the only thing the pipeline reads,
+so a recommendation you make in prose and do not write down is a recommendation
+that will never be worked on, and the loop idles with your findings in it.
+
+Your final message is prose for whoever is watching the stream, and for the next
+explorer, which starts where you stopped. Nothing in it is parsed. It still
+needs a shape:
 
 ```
 PRIOR ART

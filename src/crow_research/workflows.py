@@ -12,16 +12,22 @@ gets the *previous agent's own report* — not its transcript, not a database ro
 itself costs a turn to say what it just said. ``compact=`` buys the explicit
 interagent summary anyway, for a step whose output is long enough that the next
 agent would drown in it.
+
+:func:`pipeline` is the one that runs forever, and it keeps its state in a JSON
+file the agents edit rather than in a report format it parses — see the section
+at the bottom.
 """
 
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, Sequence
 
 from .agent import Workflow
 from .roles import Role
-from .todo import Todo, parse_new_items, parse_updates, parse_verdict
+from .todo import Item, Todo
+from .todo import state_path as default_state_path
 from .turn import Turn, TurnCancelled
 
 #: The interagent compaction prompt — an agent asked to summarize itself for a
@@ -129,26 +135,65 @@ def select(
     return workflow
 
 
-# -- the pipeline -------------------------------------------------------
+# -- the pipeline# -- the pipeline -------------------------------------------------------
 #
 # worker -> verifier, until the verifier signs off AND the todo list is
-# complete. Then the explorer adds more items to the todo. Then it goes round
-# again: the loop does not stop by itself.
+# complete. Then the explorer adds more items. Then it goes round again: the
+# loop does not stop by itself.
+#
+# The state is a JSON file, not a report format. Every agent is told the path
+# and the shape of the document, edits it with the tools it already has, and the
+# orchestrator reads it back after each turn. What an agent *says* is prose for
+# whoever is watching the stream; what it *writes* is the contract.
 
-WORKER_PROMPT = """The todo list is the work.
+#: The document, shown to every agent verbatim. Substituted into the prompts as
+#: a value rather than written inside them, so its braces are its own and not
+#: ``.format`` escapes.
+STATE_SCHEMA = """\
+{
+  "verdict": null,
+  "verdict_note": "",
+  "items": [
+    {"id": 1, "text": "what to do", "state": "open", "note": "", "added_by": "prompt"}
+  ]
+}"""
+
+#: What all three agents are told about the file. One copy, so the part that
+#: matters cannot drift between the prompts.
+STATE_RULES = """\
+* Read the file before you write it, and leave it parsing when you are done. A
+  document that does not parse is announced upstream and your write is thrown
+  away, so the next agent sees the list exactly as it was before you touched it.
+* `state` is one of `open`, `working`, `done`, `blocked`. Ids are the
+  orchestrator's: never renumber one, and never reuse an id that is gone.
+
+Your final message is prose for whoever is watching the stream. Nothing in it is
+parsed — no state lines, no keywords, no machine-readable format of any kind.
+The file is the only thing you write that the pipeline acts on."""
+
+WORKER_PROMPT = """The work is a todo list, and the list is a file: {path}
 
 {todo}
 
-{findings}Claim items, do them, and report. Report format:
+{findings}Claim items, do them, and write the outcome into that file:
 
-* One `TODO <id> <state> <note>` line for every item you touched, where state is
-  `working` (claimed, not finished), `done` (finished and checked), `open` (not
-  started, or handed back) or `blocked` (cannot be done, say why in the note).
-* Then your report: what you changed, the exact commands you ran, and what they
-  returned. A verifier that never saw this work reads only that report.
+```json
+{schema}
+```
+
+* Set `state` on every item you touched — `working` when you have claimed it and
+  are not finished, `done` when it is finished and you have checked it, `open`
+  when you are handing it back, `blocked` when it cannot be done at all.
+* Write what you learned into that item's `note`. It is the only thing the
+  verifier reads about the item besides its state.
+* Leave `verdict` alone: it is the verifier's to set, not yours.
+
+{rules}
 """
 
 VERIFIER_PROMPT = """Verify the worker's pass. You did not write it and you do not fix it.
+
+The work is a todo list, and the list is a file: {path}
 
 {todo}
 
@@ -156,27 +201,49 @@ The worker reported:
 
 {report}
 
-Report format:
+Your sign-off goes into that file and nowhere else:
 
-* One `TODO <id> <state> <note>` line for every item whose state you dispute —
-  `open` with the finding in the note when a `done` claim did not reproduce.
-* Your findings, each with the exact command and its exact output.
-* Last line: `VERDICT: PASS`, `VERDICT: FAIL` or `VERDICT: UNVERIFIED`.
+```json
+{schema}
+```
+
+* Set `verdict` to `PASS`, `FAIL` or `UNVERIFIED`, and say why in
+  `verdict_note`. `PASS` means every claim reproduced and you found nothing
+  worth a round trip. `UNVERIFIED` means the environment would not let you
+  check — a finding about the harness, not about the work.
+* Set `state` on every item whose claim you dispute: back to `open`, with the
+  finding in `note`, when a `done` did not reproduce. A `FAIL` that reopens
+  nothing is a round nobody can act on.
+* Do not add items, and do not touch the work itself.
+
+{rules}
 """
 
 EXPLORER_PROMPT = """The pipeline is idle: the verifier signed off and the todo list is complete.
+
+The todo list is a file: {path}
 
 {todo}
 
 The verifier's last word: {verdict}
 
-{report}
+{report}Go and find what this work makes possible — the prior art it should have used,
+the gap it leaves, the next thing worth building on top of it. What you find
+goes into that file as new items:
 
-Go and find what this work makes possible — the prior art it should have used,
-the gap it leaves, the next thing worth building on top of it. Report format:
+```json
+{schema}
+```
 
-* One `ADD <text>` line per new todo item, in the order they should be done.
-* Then your findings, with a URL and commit or tag for every source.
+* Append one item per thing worth doing, in the order they should be done, each
+  with `id` one higher than the highest id in the file, `state` `open`, and
+  `added_by` `{me}`.
+* An item is a unit of work one agent can finish in a turn — not a theme, and
+  not a paragraph. Its `text` is the whole of what the worker will be told.
+* If the honest answer is that there is nothing worth adding, add nothing. An
+  empty round is a real outcome: the loop waits and asks you again.
+
+{rules}
 """
 
 
@@ -186,22 +253,70 @@ def _findings_block(verifier_report: str) -> str:
     return f"The verifier's findings on the last pass:\n\n{verifier_report.strip()}\n\n"
 
 
-def apply_updates(todo: Any, report: str, *, by: str) -> list[str]:
-    """Write an agent's `TODO <id> <state>` lines back onto the list.
+def _changes(before: Todo, after: Todo) -> list[str]:
+    """What one reload earned: a line per item whose state moved, and a line per
+    item that disappeared. Additions are :func:`_added` instead, because the
+    notice that reports them says who added them and what they say."""
+    was = {item.id: item for item in before.items}
+    lines = []
+    for item in after.items:
+        old = was.pop(item.id, None)
+        if old is not None and old.state != item.state:
+            lines.append(f"todo {item.id} -> {item.state}")
+    lines += [f"todo {item_id} removed" for item_id in was]
+    return lines
 
-    An id that is not on the list is reported upstream rather than dropped: an
-    agent inventing an id is a real event, and a silently ignored line is a list
-    that quietly stops matching what the agents think it says.
+
+def _added(before: Todo, after: Todo) -> list[Item]:
+    """The items on the list now that were not on it before."""
+    known = {item.id for item in before.items}
+    return [item for item in after.items if item.id not in known]
+
+
+async def _open(turn: Turn, path: Path, seed: Todo, *, announce: bool = True) -> Todo:
+    """The list as the file says it is — or, with no file yet, the file written.
+
+    The prompt is where the work comes from: one item, verbatim, and from then
+    on the agents own the file. Nothing reads the prompt for structure, because
+    a prompt is prose a human typed and the pipeline has no business guessing at
+    it. A seed list with items in it wins over the prompt, which is how a caller
+    starts a run with work already on the books.
     """
-    applied: list[str] = []
-    for item_id, state, note in parse_updates(report):
-        try:
-            todo.set(item_id, state, note)
-        except KeyError:
-            applied.append(f"todo {item_id} does not exist ({by} claimed it)")
-            continue
-        applied.append(f"todo {item_id} -> {state}")
-    return applied
+    if path.exists():
+        return Todo.load(path)
+    state = Todo.from_dict(seed.to_dict())
+    if not len(state):
+        state.add(turn.prompt, by="prompt")
+    state.save(path)
+    if announce:
+        await turn.notice(
+            f"todo seeded with {len(state)} items",
+            description=f"{path}\n\n{state.render(only_pending=True)}",
+        )
+    return state
+
+
+async def _reload(turn: Turn, path: Path, before: Todo) -> tuple[Todo, list[str]]:
+    """Read back what an agent just wrote, and report what moved.
+
+    A document that does not parse is announced upstream and the last good copy
+    goes back in its place. Restoring it is not politeness: the loop reads this
+    file to decide what happens next, so an unreadable list is a list that can
+    never be finished. The failure has to be loud, and the run has to go on —
+    the protocol this replaced dropped a report line it did not recognize,
+    which is indistinguishable from an agent that agreed with you.
+    """
+    try:
+        after = Todo.load(path)
+    except ValueError as error:
+        await turn.notice(
+            f"{path.name} does not parse — {error}",
+            severity="error",
+            description="the last good copy is back in place; that agent's write is lost",
+        )
+        before.save(path)
+        return Todo.from_dict(before.to_dict()), []
+    return after, _changes(before, after)
 
 
 def pipeline(
@@ -214,10 +329,20 @@ def pipeline(
     max_review: int = 5,
     announce: bool = True,
     idle_pause: float = 30.0,
+    state_path: Optional[Path] = None,
 ) -> Workflow:
     """The loop: worker -> verifier until sign-off on a complete list, then the
     explorer adds more items, then round again. It does not end by itself;
     ``session/cancel`` ends it.
+
+    The state lives in the file at ``state_path`` — by default
+    ``.crow-research/todo.json`` under the working directory the session was
+    opened on. ``todo`` is what seeds that file the first time it is written;
+    with no file and an empty seed, the prompt becomes the first item. From then
+    on the file *is* the list: the orchestrator writes it once, reads it after
+    every turn, and never edits it in between, because the agents are the ones
+    doing the work. A run can therefore be picked up where it left off, and a
+    human can add an item with a text editor.
 
     ``max_review`` bounds one round's worker/verifier exchange, not the loop. A
     pair that cannot agree still falls through to the explorer, so a stuck round
@@ -231,87 +356,97 @@ def pipeline(
     """
 
     async def workflow(turn: Turn) -> Optional[str]:
+        path = Path(state_path) if state_path else default_state_path(turn.cwd)
+        state = await _open(turn, path, todo, announce=announce)
         last: Optional[str] = None
-        verdict: Optional[str] = None
         verifier_report = ""
         round_no = 0
-        if not len(todo):
-            # The prompt is where the work comes from: it seeds the list, and
-            # from here the agents own it. ``ADD`` lines are honored so one
-            # prompt can hand over several items; otherwise the whole prompt is
-            # the first one.
-            todo.extend(parse_new_items(turn.prompt) or [turn.prompt], by="prompt")
-            if announce:
-                await turn.notice(
-                    f"todo seeded with {len(todo)} items", description=todo.render(only_pending=True)
-                )
         while True:
             turn._check()
             round_no += 1
             # -- worker -> verifier, until the verifier signs off on a complete list
             for _attempt in range(max_review):
                 turn._check()
-                # The exit condition, and a guard as well: a complete list has
-                # nothing for the worker to claim, and dispatching it anyway
-                # buys a turn whose whole content is "nothing to do". The first
-                # real run did exactly that — round 1's explorer added no items,
-                # so round 2 ran worker *and* verifier against an empty list
-                # before the explorer was asked again.
-                if todo.complete:
+                # The exit condition, and a guard as well: a signed-off complete
+                # list has nothing for the worker to claim, and dispatching it
+                # anyway buys a turn whose whole content is "nothing to do". The
+                # first real run did exactly that — round 1's explorer added no
+                # items, so round 2 ran worker *and* verifier against an empty
+                # list before the explorer was asked again.
+                if state.complete and state.verdict == "PASS":
                     break
                 if announce:
                     await turn.notice(
                         f"round {round_no} · {worker.label}",
-                        description=f"{len(todo.pending())} pending · last verdict {verdict or 'none'}",
+                        description=f"{len(state.pending())} pending · last verdict {state.verdict or 'none'}",
                     )
                 worker_result = await turn.run(
                     worker,
-                    WORKER_PROMPT.format(todo=todo.render(), findings=_findings_block(verifier_report)),
+                    WORKER_PROMPT.format(
+                        path=path,
+                        todo=state.render(),
+                        findings=_findings_block(verifier_report),
+                        schema=STATE_SCHEMA,
+                        rules=STATE_RULES,
+                    ),
                     timeout=timeout,
                 )
                 last = worker_result.stop_reason
-                for line in apply_updates(todo, worker_result.report, by=worker.name):
-                    await turn.notice(line, severity="warning" if "does not exist" in line else "info")
+                state, moved = await _reload(turn, path, state)
+                for line in moved:
+                    await turn.notice(line)
 
                 turn._check()
                 if announce:
                     await turn.notice(f"round {round_no} · {verifier.label}", description="signing off on the pass")
                 verifier_result = await turn.run(
                     verifier,
-                    VERIFIER_PROMPT.format(todo=todo.render(), report=worker_result.report),
+                    VERIFIER_PROMPT.format(
+                        path=path, todo=state.render(), report=worker_result.report,
+                        schema=STATE_SCHEMA, rules=STATE_RULES,
+                    ),
                     timeout=timeout,
                 )
                 last = verifier_result.stop_reason
-                for line in apply_updates(todo, verifier_result.report, by=verifier.name):
-                    await turn.notice(line, severity="warning" if "does not exist" in line else "info")
+                state, moved = await _reload(turn, path, state)
+                for line in moved:
+                    await turn.notice(line)
                 verifier_report = verifier_result.report
-                verdict = parse_verdict(verifier_report)
                 if announce:
                     await turn.notice(
-                        f"round {round_no} · verdict {verdict or 'UNREPORTED'}",
-                        description=todo.render(only_pending=True).splitlines()[0],
-                        severity="info" if verdict == "PASS" else "warning",
+                        f"round {round_no} · verdict {state.verdict or 'UNREPORTED'}",
+                        description=state.verdict_note or state.render(only_pending=True).splitlines()[0],
+                        severity="info" if state.verdict == "PASS" else "warning",
                     )
 
             # -- the explorer adds more items to the todo
             turn._check()
             if announce:
                 await turn.notice(f"round {round_no} · {explorer.label}", description="adding work to the todo")
+            before = state
             explorer_result = await turn.run(
                 explorer,
                 EXPLORER_PROMPT.format(
-                    todo=todo.render(), verdict=verdict or "UNREPORTED", report=_findings_block(verifier_report)
+                    path=path, todo=state.render(), verdict=state.verdict or "UNREPORTED",
+                    report=_findings_block(verifier_report), me=explorer.name,
+                    schema=STATE_SCHEMA, rules=STATE_RULES,
                 ),
                 timeout=timeout,
             )
             last = explorer_result.stop_reason
-            added = todo.extend(parse_new_items(explorer_result.report), by=explorer.name)
+            state, moved = await _reload(turn, path, state)
+            added = _added(before, state)
+            for line in moved:
+                await turn.notice(line)
             if announce:
                 await turn.notice(
                     f"round {round_no} · {explorer.label} added {len(added)} items",
                     description="; ".join(i.text[:60] for i in added) or "nothing added — the loop continues",
                 )
-            verdict, verifier_report = None, ""
+            # The verdict stays in the file. It is the verifier's to set and the
+            # next round's verifier overwrites it; the orchestrator writing null
+            # over an agent's key would be the orchestrator doing the work.
+            verifier_report = ""
             if not added and idle_pause:
                 try:
                     await asyncio.wait_for(turn.cancelled.wait(), timeout=idle_pause)

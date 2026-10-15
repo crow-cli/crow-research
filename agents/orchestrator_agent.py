@@ -12,18 +12,21 @@ it spawns the agent files next to it, drives them in sequence, and relays every
 
 The sequence is the point:
 
-    worker -> verifier -> worker -> verifier -> ...   until VERDICT: PASS and the
-                                                      todo list is complete
+    worker -> verifier -> worker -> verifier -> ...   until the verdict is PASS
+                                                      and the todo list is done
     -> explorer                                       adds more items to the todo
     -> worker -> ...                                  and it goes round again
 
 It does not stop. ``session/cancel`` stops it.
 
-The prompt the client sends is where the work comes from: it seeds the todo list
-(``ADD <text>`` lines, or the whole prompt as one item), and from then on the
-agents own the list — the worker claims and settles items, the verifier reopens
-the ones whose claims did not reproduce, the explorer adds what the finished work
-made possible.
+The prompt the client sends is where the work comes from: it becomes the first
+item on the todo list, and from then on the agents own the list. The list is a
+JSON file — ``.crow-research/todo.json`` under the working directory the client
+opened the session on — that the worker, the verifier and the explorer edit with
+the tools they already have, and that this file only ever seeds and reads. The
+worker claims items and settles them, the verifier reopens the ones whose claims
+did not reproduce and signs off in the same document, the explorer adds what the
+finished work made possible.
 """
 
 from __future__ import annotations
@@ -74,17 +77,18 @@ def agent_role(name: str, model: Optional[str]) -> Role:
 
 
 def build(args: argparse.Namespace) -> OrchestratorAgent:
-    """Assemble the pipeline. The todo outlives a turn: the explorer's items are
-    what the next round works on, so it is built here, not per prompt."""
+    """Assemble the pipeline."""
     worker = agent_role("worker", args.model)
     verifier = agent_role("verifier", args.model)
     explorer = agent_role("explorer", args.model)
-    # The todo outlives a turn — the explorer's items are what the next round
-    # works on — so it is built here, once, and the prompt that arrives on
-    # ``session/prompt`` seeds it.
-    todo = Todo()
+    # The list outlives a turn, and it lives in a file rather than in this
+    # process: ``state_path`` is left unset so the pipeline puts it under the
+    # working directory the client opened the session on — the directory the
+    # agents are actually working in. The prompt that arrives on
+    # ``session/prompt`` seeds it. The ``Todo()`` is the seed a Python caller
+    # supplies instead, and it is empty here.
     return OrchestratorAgent(
-        workflows.pipeline(worker, verifier, explorer, todo, timeout=args.timeout),
+        workflows.pipeline(worker, verifier, explorer, Todo(), timeout=args.timeout),
         name=args.name,
         title=args.title,
         mcp_servers=None,  # None -> crow's own configured tool supply, per child

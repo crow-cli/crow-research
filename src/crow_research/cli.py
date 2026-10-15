@@ -24,7 +24,7 @@ from . import workflows
 from .agent import OrchestratorAgent, Workflow, serve_stdio
 from .peer import Peer, PeerClient
 from .roles import BUILTIN, Role, resolve
-from .todo import Todo
+from .todo import Todo, state_path
 from .transport import Stdio
 
 DEFAULT_CHAIN = ("worker", "verifier")
@@ -61,11 +61,14 @@ def build_workflow(args: argparse.Namespace) -> Workflow:
         missing = [n for n in ("worker", "verifier", "explorer") if n not in by]
         if missing:
             raise SystemExit(f"--workflow pipeline needs a role for each of: {', '.join(missing)}")
-        # The todo outlives the turn: the explorer's items are what the next
-        # round works on, so it is built once here rather than per prompt.
+        # The list outlives the turn — the explorer's items are what the next
+        # round works on — and it lives in a file, so a run can be picked up
+        # where it left off. ``--cwd`` pins that file; without it the pipeline
+        # puts it under the working directory the session was opened on.
         inner = workflows.pipeline(
             by["worker"], by["verifier"], by["explorer"], Todo(),
             timeout=args.timeout, idle_pause=args.idle_pause,
+            state_path=state_path(args.cwd) if args.cwd else None,
         )
     else:
         raise SystemExit(f"unknown workflow {args.workflow!r}")
@@ -145,7 +148,9 @@ def parser() -> argparse.ArgumentParser:
         p.add_argument("--rounds", type=int, default=None, help="repeat the workflow N times (-1 = forever)")
         p.add_argument("--idle-pause", type=float, default=30.0,
                        help="seconds to wait when the pipeline has no work and the explorer added none")
-        p.add_argument("--cwd", default=None)
+        p.add_argument("--cwd", default=None,
+                       help="working directory for role endpoints and for the pipeline's state file "
+                            "(default: the session's own)")
 
     serve = sub.add_parser("serve", help="run the orchestrator as an ACP v2 agent on stdio")
     common(serve)

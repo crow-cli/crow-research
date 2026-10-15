@@ -2,10 +2,21 @@
 
 One list, three agents, and no protocol between them beyond this object: the
 worker claims items and reports on them, the verifier signs off on the work, the
-explorer adds the items the work made possible. It lives in the orchestrator's
-process because that is the only place all three agents are visible at once —
-the alternative is asking one agent to parse another agent's prose for state,
-which is a handoff that fails silently and looks like agreement.
+explorer adds the items the work made possible.
+
+The list is a JSON file the agents edit and the orchestrator reads —
+``.crow-research/todo.json`` under the working directory the session was opened
+on. That file is the whole handoff. The alternative is asking one agent to parse
+another agent's prose for state, which fails silently and looks like agreement:
+a report line the model happened to wrap in backticks read as prose, the item
+stayed open, and the worker was dispatched again to do work it had already done.
+A file has no parser to defeat — ``json.load`` either works or raises, and a
+raise is an event the orchestrator announces instead of a list that quietly
+stops matching what the agents think it says.
+
+It is written ``indent=2`` because the agents write it with the same ``edit``
+tool they use on source: structured text a model can patch in place, rather
+than a document it has to regenerate from memory.
 
 The list is also the loop's exit condition, which is why it is a real object
 rather than a section of a prompt: "until the verifier signs off AND the todo
@@ -16,13 +27,32 @@ structure, not a vibe.
 from __future__ import annotations
 
 import itertools
+import json
+import os
 from dataclasses import dataclass, field
-from typing import Iterator, Optional
+from pathlib import Path
+from typing import Any, Iterator, Optional
 
 #: An item's life. ``open`` -> ``working`` -> ``done`` (verified) or back to
 #: ``open`` (the verifier found a hole). ``blocked`` is a dead end a human or an
 #: explorer has to reopen.
 OPEN, WORKING, DONE, BLOCKED = "open", "working", "done", "blocked"
+
+#: Every state an item may be in. Anything else in the file is a ``ValueError``
+#: on load, not a guess: an invented state is the agent's mistake to make.
+STATES = (OPEN, WORKING, DONE, BLOCKED)
+
+#: What a verifier may conclude. ``None`` in the file means it has not yet.
+VERDICTS = ("PASS", "FAIL", "UNVERIFIED")
+
+#: Where the list lives, relative to the session's working directory. Hidden,
+#: because it is the pipeline's state and not part of anyone's source tree.
+STATE_FILE = ".crow-research/todo.json"
+
+
+def state_path(cwd: str | Path) -> Path:
+    """The state file for one working directory."""
+    return Path(cwd) / STATE_FILE
 
 
 @dataclass
@@ -40,13 +70,62 @@ class Item:
         note = f" — {self.note}" if self.note else ""
         return f"{self.id}. {mark} {self.text}{note}"
 
+    # -- the file -------------------------------------------------------
+
+    def to_dict(self) -> dict[str, Any]:
+        """This item as the state file holds it. Every key, always: an agent
+        editing the file should not have to wonder which ones are optional."""
+        return {
+            "id": self.id,
+            "text": self.text,
+            "state": self.state,
+            "note": self.note,
+            "added_by": self.added_by,
+        }
+
+    @classmethod
+    def from_dict(cls, doc: Any) -> Item:
+        """One item out of the file. Anything the contract does not describe is
+        a ``ValueError`` naming what is wrong — the message goes upstream to
+        whoever is watching, so it is written for them, not for a log."""
+        if not isinstance(doc, dict):
+            raise ValueError(f"an item is a JSON object, got {type(doc).__name__}")
+        item_id = doc.get("id")
+        if isinstance(item_id, bool) or not isinstance(item_id, int):
+            raise ValueError(f"an item's id is an integer, got {item_id!r}")
+        text = doc.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError(f"item {item_id} has no text")
+        state = doc.get("state", OPEN)
+        if not isinstance(state, str) or state.lower() not in STATES:
+            raise ValueError(f"item {item_id} has state {state!r}, expected one of {'/'.join(STATES)}")
+        state = state.lower()
+        note, added_by = doc.get("note", ""), doc.get("added_by", "")
+        for name, value in (("note", note), ("added_by", added_by)):
+            if not isinstance(value, str):
+                raise ValueError(f"item {item_id}'s {name} is a string, got {type(value).__name__}")
+        return cls(id=item_id, text=text.strip(), state=state, note=note.strip(), added_by=added_by)
+
 
 @dataclass
 class Todo:
-    """The shared list. Small on purpose: add, claim, settle, render."""
+    """The shared list. Small on purpose: add, claim, settle, render, save.
+
+    ``verdict`` and ``verdict_note`` are the verifier's sign-off. They live on
+    the list rather than in a report because the loop's exit condition reads
+    them: "the verifier signed off AND the todo list is complete" is one
+    expression over this object.
+    """
 
     items: list[Item] = field(default_factory=list)
-    _ids: Iterator[int] = field(default_factory=lambda: itertools.count(1), repr=False)
+    verdict: Optional[str] = None
+    verdict_note: str = ""
+    #: Where the next id comes from. Not part of the repr and not part of
+    #: equality: two lists holding the same items are the same list, whatever
+    #: their counters have been through.
+    _ids: Iterator[int] = field(
+        default_factory=lambda: itertools.count(1), repr=False, compare=False
+    )
 
     # -- mutation -------------------------------------------------------
 
@@ -140,81 +219,73 @@ class Todo:
         head = f"TODO ({len(self.pending())} pending / {len(self.items)} total)"
         return head + "\n" + "\n".join(i.render() for i in shown)
 
+    # -- the file -------------------------------------------------------
 
-#: Markdown decoration an agent wraps a report line in. The prompts show the
-#: format inside backticks, so the models echo it inside backticks — and a
-#: literal read of that line is a list that never moves. Run 3's worker reported
-#: ```TODO 1 done …``` and the verifier's ``VERDICT: PASS`` could not end the
-#: round, because the item it signed off on was still pending.
-_DECORATION = "`*#>- \t"
+    def to_dict(self) -> dict[str, Any]:
+        """The document. Key order is the order the agents are shown it in."""
+        return {
+            "verdict": self.verdict,
+            "verdict_note": self.verdict_note,
+            "items": [item.to_dict() for item in self.items],
+        }
 
+    @classmethod
+    def from_dict(cls, doc: Any) -> Todo:
+        """The list a document describes.
 
-def _bare(line: str) -> str:
-    """One report line with its markdown decoration removed from both ends."""
-    return line.strip().strip(_DECORATION).strip()
+        Validating is the whole point of the method: this is the only place an
+        agent's write is checked, and everything it rejects is a ``ValueError``
+        the orchestrator announces upstream before putting the last good copy
+        back. Nothing here guesses at what the agent meant.
+        """
+        if not isinstance(doc, dict):
+            raise ValueError(f"the state file is a JSON object, got {type(doc).__name__}")
+        raw = doc.get("items", [])
+        if not isinstance(raw, list):
+            raise ValueError(f"'items' is a list, got {type(raw).__name__}")
+        items = [Item.from_dict(entry) for entry in raw]
+        seen: set[int] = set()
+        for item in items:
+            if item.id in seen:
+                raise ValueError(f"two items claim id {item.id}")
+            seen.add(item.id)
+        verdict = doc.get("verdict")
+        if verdict is not None:
+            if not isinstance(verdict, str) or verdict.upper() not in VERDICTS:
+                raise ValueError(f"verdict is {verdict!r}, expected null or one of {'/'.join(VERDICTS)}")
+            verdict = verdict.upper()
+        note = doc.get("verdict_note", "")
+        if not isinstance(note, str):
+            raise ValueError(f"verdict_note is a string, got {type(note).__name__}")
+        todo = cls(items=items, verdict=verdict, verdict_note=note.strip())
+        # Ids are never reused, so a loaded list keeps counting past every id in
+        # the file: the next ``add`` must not collide with an item some agent is
+        # still holding a reference to.
+        todo._ids = itertools.count(max(seen, default=0) + 1)
+        return todo
 
+    @classmethod
+    def load(cls, path: str | Path) -> Todo:
+        """Read the file.
 
-def _tok(word: str) -> str:
-    """A report keyword or state with its own decoration removed.
+        A document that is not the shape above raises ``ValueError`` —
+        ``json.JSONDecodeError`` is one — and a missing file raises
+        ``FileNotFoundError``. Both are decisions for the caller; neither is
+        something to paper over with an empty list, which is what a silently
+        reset todo looks like from inside the loop.
+        """
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
-    ``_bare`` only reaches the ends of the line, so a model that bolds the
-    format the prompt showed it — ``**TODO 2 done** and then some`` — still has
-    decoration wrapped around the tokens that decide the parse.
-    """
-    return word.strip(_DECORATION)
+    def save(self, path: str | Path) -> Path:
+        """Write the file, atomically.
 
-
-def parse_updates(report: str) -> list[tuple[int, str, str]]:
-    """``(id, state, note)`` triples out of an agent's report.
-
-    The contract the worker and verifier are given is one line per item::
-
-        TODO 3 done built the parser, tests pass
-        TODO 5 open the empty input still crashes
-
-    Parsing is deliberately dumb and deliberately loud about nothing: a line
-    that does not start with ``TODO <id> <state>`` is prose and is ignored, so
-    an agent that explains itself at length cannot corrupt the list. A state we
-    do not know is ignored for the same reason — inventing one is the agent's
-    mistake to make, not ours to guess at.
-    """
-    out: list[tuple[int, str, str]] = []
-    for line in (report or "").splitlines():
-        parts = _bare(line).split(None, 3)
-        if len(parts) < 3 or _tok(parts[0]).upper() != "TODO":
-            continue
-        try:
-            item_id = int(_tok(parts[1]))
-        except ValueError:
-            continue
-        state = _tok(parts[2]).lower()
-        if state not in (OPEN, WORKING, DONE, BLOCKED):
-            continue
-        out.append((item_id, state, parts[3] if len(parts) > 3 else ""))
-    return out
-
-
-def parse_new_items(report: str) -> list[str]:
-    """The explorer's additions: ``ADD <text>`` lines, in order."""
-    out: list[str] = []
-    for line in (report or "").splitlines():
-        parts = _bare(line).split(None, 1)
-        if len(parts) == 2 and _tok(parts[0]).upper() == "ADD":
-            out.append(parts[1].strip())
-    return out
-
-
-def parse_verdict(report: str) -> Optional[str]:
-    """``PASS`` / ``FAIL`` / ``UNVERIFIED`` out of a verifier's report, or None.
-
-    The last verdict wins, because an agent that reasons its way from FAIL to
-    PASS in one message has changed its mind and the later word is the verdict.
-    """
-    verdict: Optional[str] = None
-    for line in (report or "").splitlines():
-        head, sep, rest = _bare(line).partition(":")
-        if sep and _tok(head).upper() == "VERDICT":
-            word = _tok(rest.strip().split(None, 1)[0]).upper() if rest.strip() else ""
-            if word in ("PASS", "FAIL", "UNVERIFIED"):
-                verdict = word
-    return verdict
+        Through a temporary and a rename, so a reader that arrives mid-write —
+        an agent, or a cancel — sees the old document or the new one, never a
+        truncated third thing.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+        return path

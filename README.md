@@ -15,50 +15,84 @@ that flag would mean "no pipeline".
 ## The pipeline
 
 `worker` then `verifier`, repeatedly, **until the verifier signs off
-(`VERDICT: PASS`) and the todo list is complete**. Then the explorer adds more
-items to the todo. Then round again — in perpetuity. `session/cancel` is what
-stops it.
+(`"verdict": "PASS"`) and the todo list is complete**. Then the explorer adds
+more items to the todo. Then round again — in perpetuity. `session/cancel` is
+what stops it.
 
 ```
-  prompt ──► seed the todo (its ADD lines, else the whole prompt)
+  prompt ──► write the todo file (the whole prompt is item 1)
                  │
        ┌─────────▼──────────────────────────────────────┐
        │ round N                                        │
        │                                                │
-       │   worker ──report──► verifier ──VERDICT──┐     │
+       │   worker ──report──► verifier ──verdict──┐     │
        │     ▲                                    │     │
-       │     └─── FAIL, or items still pending ───┘     │
+       │     └── not PASS, or items still open ───┘     │
        │                                                │
-       │   PASS and todo.complete ──► explorer ──ADD──┐ │
+       │   PASS and complete ──► explorer ──new items─┐ │
        └──────────────────────────────────────────────┴─┘
                      there is no exit; cancel ends it
 ```
 
 Two guards the first real run taught:
 
-* the review loop breaks on `todo.complete`, so the worker is never dispatched
-  with nothing to claim (round 2 of run 1 did exactly that — worker *and*
-  verifier spent a turn each on an empty list);
+* the review loop breaks on `complete and verdict == "PASS"`, so the worker is
+  never dispatched with nothing to claim (round 2 of run 1 did exactly that —
+  worker *and* verifier spent a turn each on an empty list);
 * when the explorer adds nothing there is no work anywhere in the system, so the
   loop waits `idle_pause` seconds instead of immediately asking the explorer
   again. The wait is raced against `turn.cancelled`, because a perpetual loop
   that ignores `session/cancel` for thirty seconds is a loop that does not stop.
 
-## The todo is the contract
+## The todo is the contract, and the contract is a file
 
-The list (`todo.py`) outlives the turn: the explorer's items are what the next
-round works on. Agents move it by printing lines in their final report, and the
-orchestrator parses those lines and nothing else:
+`.crow-research/todo.json`, under the working directory the session was opened on
+(`--cwd` pins it). The list outlives the turn — the explorer's items are what the
+next round works on — and it outlives the process: a run cancelled mid-round is
+picked up where it left off, and a human can add an item with a text editor.
 
-| line | who prints it | effect |
-|---|---|---|
-| `TODO <id> <state> <note>` | worker, verifier | sets item `<id>` to `open`, `working`, `done` or `blocked`. An id that is not on the list is announced upstream rather than dropped — an agent inventing an id is a real event. |
-| `ADD <text>` | explorer, and the seeding prompt | appends an item, `added_by` whoever said it |
-| `VERDICT: PASS / FAIL / UNVERIFIED` | verifier, last line | last one in the report wins; `PASS` is the sign-off |
+```json
+{
+  "verdict": null,
+  "verdict_note": "",
+  "items": [
+    {"id": 1, "text": "what to do", "state": "open", "note": "", "added_by": "prompt"}
+  ]
+}
+```
+
+| who | writes |
+|---|---|
+| orchestrator | the file once, to seed it — the prompt verbatim as item 1. It never edits it again: it reads it back after every turn and announces what moved. |
+| worker | `state` and `note` on the items it touched |
+| verifier | `state` on the items whose claims it disputes, plus `verdict` and `verdict_note` |
+| explorer | new items, each `id` one past the highest in the file |
+
+`state` is `open`, `working`, `done` or `blocked`; `verdict` is `PASS`, `FAIL`,
+`UNVERIFIED` or `null`. Anything else — a duplicate id, an item with no text, a
+verdict spelled `MAYBE`, a file that does not parse — is a `ValueError` on load,
+which the orchestrator announces upstream and answers by putting the last good
+copy back. The write is lost, the run goes on, and whoever is watching is told.
+
+That is the whole reason it is a file. The protocol this replaced was lines in
+the agents' prose — `TODO 1 done …`, `ADD …`, `VERDICT: PASS` — and a line the
+parser did not recognize was *silently dropped*, which looks exactly like an
+agent agreeing with you. Run 3 spun a round on an item the worker had already
+finished, because the worker wrapped its line in backticks and the parser read
+them literally. `json.load` has no such failure mode: it works, or it raises.
+
+The agents write it with the same `edit` tool they use on source, which is why it
+is `indent=2` and why every key is always present: a document an agent can patch
+in place, rather than one it has to regenerate from memory.
+
+What an agent *says* is prose — for whoever is watching, and for the next agent's
+prompt. Nothing in it is parsed.
 
 `turn.notice` carries the round's shape upstream — `round 3 · Worker`,
-`round 3 · verdict PASS`, `round 3 · Explorer added 6 items` — so a client that
-renders nothing but notices still shows the loop turning.
+`todo 3 -> done`, `round 3 · verdict PASS`, `round 3 · Explorer added 6 items` —
+so a client that renders nothing but notices still shows the loop turning. Those
+notices are a diff of the file before and after each turn, so they cannot drift
+from what the file says.
 
 ## Specialization means editing crow's system prompt
 
@@ -71,9 +105,9 @@ character, inserts the ones that are new, and preserves `template_args`
 
 | agent file | patches | inserts | untouched | chars |
 |---|---|---|---|---|
-| `worker_agent.py` | `ROLE` | `REPORT`, after `IMPORTANT` | 20 of 21 | 19219 → 20515 |
-| `verifier_agent.py` | `ROLE`, `PROBLEM_SOLVING_WORKFLOW`, `FILE_SYSTEM_GUIDELINES`, `CODE_QUALITY`, `VERSION_CONTROL` | `VERDICT` | 16 of 21 | → 17841 |
-| `explorer_agent.py` | `ROLE`, `PROBLEM_SOLVING_WORKFLOW`, `FILE_SYSTEM_GUIDELINES`, `EXTERNAL_SERVICES` | `FINDINGS` | 17 of 21 | → 19387 |
+| `worker_agent.py` | `ROLE` | `REPORT`, after `IMPORTANT` | 20 of 21 | 19219 → 21179 |
+| `verifier_agent.py` | `ROLE`, `PROBLEM_SOLVING_WORKFLOW`, `FILE_SYSTEM_GUIDELINES`, `CODE_QUALITY`, `VERSION_CONTROL` | `VERDICT` | 16 of 21 | → 18607 |
+| `explorer_agent.py` | `ROLE`, `PROBLEM_SOLVING_WORKFLOW`, `FILE_SYSTEM_GUIDELINES`, `EXTERNAL_SERVICES` | `FINDINGS` | 17 of 21 | → 20006 |
 
 `patch_section` raises `KeyError` when the section it was asked to patch is not
 there, so a rename upstream fails loudly instead of quietly producing a generic
@@ -95,7 +129,7 @@ own list, which wins. An explicit empty list means "no tools".
 
 ```sh
 uv sync
-uv run pytest -q        # 44 tests; 5 of them end-to-end over the real wire, no model
+uv run pytest -q        # 46 tests; 5 of them end-to-end over the real wire, no model
 ```
 
 The client is `repl_client.py`, a v2 port of crow's
@@ -103,7 +137,7 @@ The client is `repl_client.py`, a v2 port of crow's
 Positionals are the agent command; the child's own flags go after `--`:
 
 ```sh
-uv run python -m crow_research.repl_client -p "ADD add a Todo.remove(item_id) method with tests" --cancel-after 900 -- python agents/orchestrator_agent.py --model glm-5.3-flash --debug
+uv run python -m crow_research.repl_client -p "add a Todo.remove(item_id) method with tests" --cancel-after 900 -- python agents/orchestrator_agent.py --model glm-5.3-flash --debug
 ```
 
 `--cancel-after` is how a run ends: it sends `session/cancel` N seconds in,
@@ -182,23 +216,23 @@ lazily, inside `_tool_supply`.
 | `agent.py` | `OrchestratorAgent(workflow, name=, title=, version=, default_cwd=, autostart=, mcp_servers=)` — a v2 agent upstream whose react loop is the workflow you pass in. `prompt` acks with a `message_id`, echoes the user message, and runs the workflow as a task; the task is shielded so even a cancelled turn writes its own `idle`. One foreground turn per session. |
 | `turn.py` | `Turn` — the workflow's whole world: `emit`/`say`/`notice` upstream, `peer`/`run` downstream, `cancelled` for the seams. Peers are registered before `start` so a cancel can reach them; `run` races the child against the cancel and gives it `GRACE` to report its own cancelled idle. Child `state_update`s stay downstream by default. |
 | `peer.py` | `Peer` — one downstream agent: connect, handshake, session, turn, cancel, teardown. `PeerClient` records updates and folds running→idle into a per-session stop queue registered *before* the send, auto-allows permissions, declines elicitation. `TurnResult` is what a step produced; `.report` is what a handoff carries. |
-| `todo.py` | `Item`, `Todo` (`add`/`extend`/`set`/`remove`/`pending`/`complete`/`render`/`in`), and the three report parsers. |
-| `workflows.py` | `pipeline(worker, verifier, explorer, todo, *, timeout=, max_review=5, announce=, idle_pause=30.0)` — the loop — plus its three prompt templates, `apply_updates`, and the older `single`/`chain`/`rounds`/`forever`/`select`. |
+| `todo.py` | `Item`, `Todo` (`add`/`extend`/`set`/`remove`/`get`/`pending`/`complete`/`render`/`in`), the document (`to_dict`/`from_dict`, validating) and the file (`load`/`save`, atomic). `STATE_FILE` and `state_path(cwd)`. |
+| `workflows.py` | `pipeline(worker, verifier, explorer, todo, *, timeout=, max_review=5, announce=, idle_pause=30.0, state_path=)` — the loop — plus its three prompt templates, `STATE_SCHEMA` and `STATE_RULES` (the file contract every agent is shown), and the older `single`/`chain`/`rounds`/`forever`/`select`. |
 | `roles.py` | `Role(name, brief, endpoint, title, model, handoff, env)` and `resolve("name=endpoint")`. A brief is one sentence of handoff framing; the character lives in the agent file. `researcher` is defined and has no agent file yet. |
 | `prompts.py` | `sections`, `patch_section`, `insert_section`, `role_prompt` — how a role specializes crow's system prompt. |
 | `mcp.py` | config `mcpServers` → v2 wire models (`stdio_server`, `http_server`, `from_map`, `from_config`). Malformed entries raise; nothing is silently skipped. |
 | `transport.py` | `Stdio` / `Ws` / `Http` behind one `open_endpoint`, so nothing above it branches on transport. |
 | `repl_client.py` | the v2 `ReplClient`, and `python -m crow_research.repl_client` as a console script. |
 | `cli.py` | `serve` and `run`. No config file: a cast is `--role name=endpoint`, repeated. |
-| `examples/stub_agent.py` | A v2 agent with no model in it. `STUB_REPLY_<NAME>` scripts a role's report, so the pipeline tests can emit `TODO 1 done`, `VERDICT: PASS` and `ADD …` over a real wire. |
+| `examples/stub_agent.py` | A v2 agent with no model in it. `STUB_REPLY_<NAME>` scripts what a role *says*; `STUB_STATE_<NAME>` is a JSON patch deep-merged into `STUB_STATE_PATH` before it goes idle, which is what a role *writes* — so the pipeline tests drive the real contract over a real wire. |
 
 ## Writing your own workflow
 
 The contract is one async callable, `async (Turn) -> stop_reason`. The pipeline is
-that, with a todo list in the closure:
+that, with a todo file it reads back after every turn:
 
 ```python
-from crow_research import OrchestratorAgent, Role, Todo, WORKER, VERIFIER, pipeline
+from crow_research import EXPLORER, OrchestratorAgent, Todo, VERIFIER, WORKER, pipeline, state_path
 
 agent = OrchestratorAgent(pipeline(WORKER, VERIFIER, EXPLORER, Todo(), idle_pause=30.0))
 ```
@@ -208,14 +242,18 @@ Anything else works too, and rounds are just recursion:
 ```python
 async def adversarial(turn):
     """Work, then have somebody who did not do the work try to break it."""
-    done = await turn.run(WORKER, turn.prompt)
+    path = state_path(turn.cwd)
+    task = f"{turn.prompt}\n\nThe todo list is {path}; write your outcome into it."
+    done = await turn.run(WORKER, task)
     await turn.notice("handing off to the verifier")
-    verdict = await turn.run(VERIFIER, VERIFIER.assignment(
-        task=turn.prompt, report=done.report, previous="worker"))
-    if "FAIL" in verdict.report.upper():
+    await turn.run(VERIFIER, VERIFIER.assignment(
+        task=task, report=done.report, previous="worker"))
+    # The verdict is a field in the file, not a word in the report. Reading it
+    # back is the difference between knowing what happened and guessing at it.
+    if Todo.load(path).verdict != "PASS":
         await turn.say("the verifier found holes; going around again")
         return await adversarial(turn)
-    return verdict.stop_reason
+    return done.stop_reason
 ```
 
 `turn.run` relays everything the child emits while it works, so a workflow never
@@ -261,23 +299,33 @@ turn, no model anywhere:
   actually arrives instead of a hang.
 * **autostart** — work begins on `session/new` with no prompt, and the echoed
   user message is stamped `crow/autostart`.
-* **sign-off** — a scripted `VERDICT: PASS` on a complete list sends the loop to
-  the explorer, and the worker is *not* re-dispatched with nothing to claim.
-* **explorer additions** — the explorer's `ADD` lines land on the list and reach
-  the next worker prompt.
+* **sign-off** — a `"verdict": "PASS"` written into the state file on a complete
+  list sends the loop to the explorer, and the worker is *not* re-dispatched with
+  nothing to claim. The file is asserted afterwards too: it is the only thing a
+  restarted run would read.
+* **explorer additions** — the items the explorer appends to the file land on the
+  list and reach the next worker prompt.
 
-`tests/test_todo.py` is 39 unit tests for the list and the report parsers. It was
-written by the pipeline's own worker on run 1 and extended by it on runs 2 and 3.
+Both are driven by `STUB_STATE_<ROLE>`, a JSON patch each stub merges into the
+state file before it goes idle, so what is under test is the real contract — the
+agents writing, the orchestrator reading back — and not a stub's idea of it.
+
+`tests/test_todo.py` is 41 unit tests for the list, the document and the file:
+what a document has to get wrong to be refused, and what a refused document costs
+(the last good copy goes back, the run goes on). It was written by the pipeline's
+own worker on run 1 and extended by it on runs 2, 3 and 4.
 
 ## What it has actually done
 
-Three runs against real models, each ended by `session/cancel`:
+Four runs against real models, each ended by `session/cancel` — all four on the
+prose protocol, before the state file replaced it:
 
 | run | model | observed |
 |---|---|---|
 | 1 | `deepseek-v4-pro` | Worker wrote `tests/test_todo.py`, 30 passed, committed `5d8b379`. Verifier reproduced every claim, found nothing, `VERDICT: PASS`. Explorer added 0 items, so round 2 ran worker and verifier against an empty list — the defect the `todo.complete` guard now prevents — and then added 6 (prior art: pydantic-ai, todo.txt, langchain deepagents, opencode, Claude Code todo-tracking and agent-teams). Round 3's worker was mid-implementation when the cancel landed; its in-flight edits broke 2 tests and are kept in `stash@{0}` as evidence. |
 | 2 | `glm-5.3-flash` | Worker added `Todo.remove` plus 4 tests, `36 passed`, committed `28a0202` under its own session trailer. Verifier dispatched; the cancel landed before it reported. |
 | 3 | `glm-5.3-flash` | Worker added `Todo.__contains__` plus 3 tests, committed `ee44965`. Verifier reproduced it and returned `VERDICT: PASS` — and the round did not end, because the worker had wrapped its state line in backticks and the parser read it literally. `4f80fcc` is that fix. |
+| 4 | `glm-5.3-flash` | Worker added `Todo.get` plus 3 tests, committed `ff5efc1`. Verifier reproduced every claim, examined and rejected a `todo.get(True)` bool/int nitpick, and returned `VERDICT: PASS`. The round closed for the first time — `todo 1 -> done`, list empty, explorer dispatched — and the cancel landed during the explorer's turn. It closed because the model happened *not* to use backticks this round, which is exactly the fragility the state file removes: the fix for run 3 taught the parser to tolerate more prose, and the answer was to stop reading prose. |
 
 ## Next
 

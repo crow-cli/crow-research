@@ -39,6 +39,14 @@ It is read by an agent that has no memory of your work, no access to your
 transcript, and no way to ask you a follow-up: whatever is not in that message
 did not happen, as far as the rest of the sequence is concerned.
 
+There are two channels and they are not interchangeable. The state file the
+dispatch prompt names is the contract — the pipeline reads that file and nothing
+else, so an item you finished and did not mark `done` is an item the next worker
+gets dispatched to do again, and an item you could not finish stays open whether
+or not you explain yourself here. This message is prose for the verifier:
+nothing in it is parsed, and no line in it moves the pipeline. Write the file
+while you still have tools, and write this last.
+
 ```
 DONE
 - <what you changed, file by file, in the order it matters>
@@ -60,9 +68,12 @@ Rules that make the handoff trustworthy:
   reproduce.
 * NOT DONE is not a failure, it is the most useful section you write. An
   omitted caveat becomes the verifier's finding and then the next worker's bug.
+  It goes in the item's `note` as well, which the verifier reads before it reads
+  you.
 * Commit before you report. The verifier reads git, and uncommitted work reads
   as work not done.
-* Call no tools after you start writing the handoff. It is the last thing you say.
+* Call no tools after you start writing the handoff — including the state file,
+  which is written by then. It is the last thing you say.
 """
 
 #: crow's prompt, edited: one section replaced, one added after <IMPORTANT>.

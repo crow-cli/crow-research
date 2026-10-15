@@ -4,11 +4,12 @@ What is asserted here is the shape the whole project exists for: worker ->
 verifier until the verifier signs off on a complete todo list, then the explorer
 adds more items, then round again — forever, until ``session/cancel``.
 
-The stubs are scripted through ``STUB_REPLY_<ROLE>`` so each role says what the
-loop parses (``TODO 1 done``, ``VERDICT: PASS``, ``ADD ...``) without an LLM in
-the loop. Dispatch counts are read off the transition notices, which is what an
-upstream client sees, so the test asserts the observable contract rather than
-poking at internals.
+The stubs are scripted through ``STUB_STATE_<ROLE>``: a JSON patch each role
+merges into the state file before it goes idle, which is what a real agent does.
+The loop reads that file and nothing else, so a test that scripted only replies
+would be testing a stub talking to itself. Dispatch counts are read off the
+transition notices, which is what an upstream client sees, so the test asserts
+the observable contract rather than poking at internals.
 
 Runnable two ways — ``pytest tests/`` or ``uv run python tests/test_pipeline.py``.
 """
@@ -16,6 +17,7 @@ Runnable two ways — ``pytest tests/`` or ``uv run python tests/test_pipeline.p
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shlex
@@ -27,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STUB = ROOT / "examples" / "stub_agent.py"
 
 from crow_research import META_AGENT, Peer, Role, Stdio  # noqa: E402
+from crow_research.todo import Todo, state_path  # noqa: E402
 from test_orchestrator import Recorder  # noqa: E402  (pytest puts tests/ on sys.path)
 
 
@@ -90,23 +93,31 @@ async def run_until(peer: Peer, prompt: str, predicate, *, limit: float = 90.0) 
 
 
 async def test_signoff_then_explorer_and_no_work_is_not_a_worker_turn() -> None:
-    """VERDICT: PASS on a complete list hands over to the explorer; an explorer
-    that adds nothing is asked again, and the worker is NOT re-dispatched to say
+    """A signed-off complete list hands over to the explorer; an explorer that
+    adds nothing is asked again, and the worker is NOT re-dispatched to say
     "nothing to do" — the defect the first real run showed."""
-    env = {
-        **os.environ,
-        "STUB_REPLY_WORKER": "TODO 1 done built it and ran the tests\nreport: 30 passed",
-        "STUB_REPLY_VERIFIER": "reproduced every claim\nVERDICT: PASS",
-        "STUB_REPLY_EXPLORER": "no prior art worth adding this round",
-    }
     with tempfile.TemporaryDirectory() as tmp:
+        env = {
+            **os.environ,
+            "STUB_STATE_PATH": str(state_path(tmp)),
+            # What each role *writes*, which is the only thing the loop reads:
+            # the worker settles the item, the verifier signs off in the same
+            # document. The explorer writes nothing — an empty round is a real
+            # outcome, and its reply is prose nobody parses.
+            "STUB_STATE_WORKER": json.dumps(
+                {"items": [{"id": 1, "state": "done", "note": "built it and ran the tests"}]}
+            ),
+            "STUB_STATE_VERIFIER": json.dumps({"verdict": "PASS", "verdict_note": "every claim reproduced"}),
+            "STUB_REPLY_EXPLORER": "no prior art worth adding this round",
+        }
         peer = Peer(
             Role(name="orchestrator", endpoint=Stdio(tuple(serve_pipeline(tmp)), env=env)),
             client_factory=Recorder,
         )
         await peer.start(os.getcwd())
         try:
-            result = await run_until(peer, "ADD make the thing", lambda c: dispatches(c).get("Explorer", 0) >= 2)
+            result = await run_until(peer, "make the thing", lambda c: dispatches(c).get("Explorer", 0) >= 2)
+            state = Todo.load(state_path(tmp))
         finally:
             await peer.close()
 
@@ -126,14 +137,30 @@ async def test_signoff_then_explorer_and_no_work_is_not_a_worker_turn() -> None:
     # The children's state machines stayed downstream: one running/idle pair.
     states = [getattr(u, "state", None) for k, u, _ in client.events if k == "state_update"]
     assert states == ["running", "idle"], states
+    # And the file says so — the only thing the next round, or a run restarted
+    # against this directory, will read.
+    assert state.verdict == "PASS", state
+    assert state.verdict_note == "every claim reproduced", state
+    assert state.complete, state.render()
+    assert state.items[0].note == "built it and ran the tests", state.items[0]
 
 
 async def test_explorer_additions_reach_the_next_worker_turn() -> None:
-    """The explorer's ``ADD`` lines land on the list, and the next worker turn is
-    prompted with them — the handover that makes the loop perpetual rather than
-    a single pass."""
-    env = {**os.environ, "STUB_REPLY_EXPLORER": "ADD second thing worth doing"}
+    """The items the explorer appends to the file land on the list, and the next
+    worker turn is prompted with them — the handover that makes the loop
+    perpetual rather than a single pass."""
     with tempfile.TemporaryDirectory() as tmp:
+        env = {
+            **os.environ,
+            "STUB_STATE_PATH": str(state_path(tmp)),
+            "STUB_STATE_WORKER": json.dumps({"items": [{"id": 1, "state": "done"}]}),
+            "STUB_STATE_VERIFIER": json.dumps({"verdict": "PASS"}),
+            # No id: appended under the next free one, which is what an agent
+            # does when it adds work rather than settling it.
+            "STUB_STATE_EXPLORER": json.dumps(
+                {"items": [{"text": "second thing worth doing", "added_by": "explorer"}]}
+            ),
+        }
         peer = Peer(
             Role(name="orchestrator", endpoint=Stdio(tuple(serve_pipeline(tmp)), env=env)),
             client_factory=Recorder,
@@ -143,8 +170,9 @@ async def test_explorer_additions_reach_the_next_worker_turn() -> None:
             # Worker and verifier echo their prompt here (no scripted reply), so
             # the todo list they were handed is visible in the relayed stream.
             result = await run_until(
-                peer, "ADD first thing", lambda c: "second thing worth doing" in c.text_from("worker")
+                peer, "first thing", lambda c: "second thing worth doing" in c.text_from("worker")
             )
+            state = Todo.load(state_path(tmp))
         finally:
             await peer.close()
 
@@ -154,6 +182,11 @@ async def test_explorer_additions_reach_the_next_worker_turn() -> None:
     assert counts["Worker"] >= 2, counts
     assert any("Explorer added 1 items" in n for n in notices(client)), notices(client)
     assert "second thing worth doing" in client.text_from("worker")
+    # The prompt became item 1 and the explorer's write became item 2. How many
+    # rounds ran before the cancel landed is the loop's business, not the test's.
+    assert state.items[0].text == "first thing", state.render()
+    assert state.items[0].state == "done", state.render()
+    assert any(i.text == "second thing worth doing" and i.added_by == "explorer" for i in state.items), state.render()
 
 
 async def main() -> int:

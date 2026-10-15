@@ -9,7 +9,9 @@ The public surface is small on purpose:
 * :class:`~crow_research.peer.Peer` — one downstream agent connection.
 * :func:`~crow_research.workflows.pipeline` — the loop: worker to verifier until
   sign-off on a complete list, then the explorer adds more work, then round
-  again. :class:`~crow_research.todo.Todo` is the contract it runs on.
+  again. :class:`~crow_research.todo.Todo` is the contract it runs on, and that
+  contract is a JSON file the agents edit — ``.crow-research/todo.json`` under
+  the working directory the session was opened on.
 * :class:`~crow_research.roles.Role` — a name, an endpoint, and a brief.
 
 The core is pure ACP v2: nothing here imports crow-cli at module load. Two edges
@@ -24,7 +26,7 @@ agent — spawned or already served on a socket — works exactly as well.
 from .agent import OrchestratorAgent, Session, Workflow, serve_stdio
 from .peer import Peer, PeerClient, PeerExited, TurnResult
 from .roles import BUILTIN, EXPLORER, RESEARCHER, VERIFIER, WORKER, Role, resolve
-from .todo import Item, Todo
+from .todo import Item, Todo, state_path
 from .transport import Endpoint, Http, Stdio, Ws, open_endpoint, parse_endpoint
 from .turn import META_AGENT, Turn, TurnCancelled
 from .workflows import COMPACT_PROMPT, chain, forever, pipeline, rounds, select, single
@@ -63,6 +65,7 @@ __all__ = [
     "select",
     "serve_stdio",
     "single",
+    "state_path",
 ]
 
 __version__ = "0.1.0"
