@@ -47,6 +47,11 @@ DEFAULT_AGENT = Path(__file__).resolve().parents[2] / "agents" / "orchestrator_a
 #: ``_meta`` key the orchestrator stamps on a relayed update.
 META_AGENT = "crow/agent"
 
+#: How many tool calls' render state to keep. A pipeline runs in perpetuity, so
+#: this dict would otherwise grow for as long as the run does; the oldest ids go
+#: first, and losing one only means a late patch for it renders as nothing.
+TOOL_MEMORY = 512
+
 
 def stdio_mcp(name: str, command: str, *args: str, env: Optional[dict[str, str]] = None) -> Any:
     """A v2 ``StdioMcpServer``, ready for ``ReplClient(mcp_servers=[...])``."""
@@ -94,6 +99,8 @@ class ReplClient:
         self._idle: Optional[asyncio.Event] = None
         self._stop_reason: Optional[str] = None
         self._agent: Optional[str] = None
+        #: ``{tool_call_id: (title, status)}`` — see :meth:`_tool_call`.
+        self._tools: dict[str, tuple[str, Optional[str]]] = {}
         self._response_buffer = ""
         self._thinking_buffer = ""
         self.stderr: list[str] = []
@@ -107,28 +114,32 @@ class ReplClient:
         inbound ``_meta``, which is how we know which one that is."""
         tag = kwargs.get(META_AGENT) or {}
         who = tag.get("title") or tag.get("role")
-        if who != self._agent:
+        # Only a *named* speaker changes the rule. The orchestrator's own
+        # notices are untagged, and letting them reset `_agent` printed a bare
+        # `Agent` rule between every pair of roles — one per notice, which is
+        # most of the screen. They are visually distinct already, and leaving
+        # `_agent` alone keeps the buffered response attributed to whoever
+        # actually said it.
+        if who is not None and who != self._agent:
             self._agent = who
             self._rule(who)
         kind = getattr(update, "session_update", None)
         if kind == "agent_message_chunk":
             text = _text_of(getattr(update, "content", None))
             self._response_buffer += text
-            self.console.print(text, end="", style="purple", highlight=False)
+            # Text, not a markup string: an agent writing `[x]`, `[link](url)`
+            # or `[in_progress]` is writing prose, and rich would eat it.
+            self.console.print(Text(text, style="purple"), end="")
         elif kind == "agent_thought_chunk":
             self._thinking_buffer += _text_of(getattr(update, "content", None))
-        elif kind == "tool_call":
-            self.console.print(f"\n⏳ {getattr(update, 'title', None) or update.tool_call_id}", style="cyan")
-        elif kind == "tool_call_update":
-            status = getattr(update, "status", None)
-            style = "green" if status == "completed" else "red" if status == "failed" else "yellow"
-            title = getattr(update, "title", None) or update.tool_call_id
-            self.console.print(f"   {title} [{status or 'pending'}]", style=style)
+        elif kind in ("tool_call", "tool_call_update"):
+            self._tool_call(update)
         elif kind == "notice":
             severity = getattr(update, "severity", "info")
             style = {"error": "bold red", "warning": "yellow"}.get(severity, "bold blue")
             description = getattr(update, "description", None)
-            self.console.print(f"\n⚠ {update.title}" + (f" — {description}" if description else ""), style=style)
+            body = f"\n⚠ {update.title}" + (f" — {description}" if description else "")
+            self.console.print(Text(body, style=style))
         elif kind == "state_update":
             state = getattr(update, "state", None)
             if state == "idle":
@@ -285,6 +296,41 @@ class ReplClient:
         self._started = False
 
     # -- rendering ------------------------------------------------------
+
+    def _tool_call(self, update: Any) -> None:
+        """One line per tool call, and a second one only if it failed.
+
+        crow's emitter is create-or-patch with ``exclude_unset``: the create
+        carries the title, later patches carry only what changed, and a subtool
+        is its own call under a ``<parent>/<child>`` id. Rendering every update
+        as it arrives therefore prints three lines for one call — the tool name,
+        a richer title, then a bare ``tool_call_id`` from the terminal patch that
+        has no title at all. So the title is accumulated per id and printed
+        once, and an id on its own is never printed.
+        """
+        call_id = getattr(update, "tool_call_id", None)
+        title = getattr(update, "title", None)
+        status = getattr(update, "status", None)
+        seen = self._tools.get(call_id)
+        if seen is None:
+            if not title:
+                return  # a patch for a call we never saw created: nothing to show
+            self._tools[call_id] = (title, status)
+            # crow-cli emits a drained subtool row exactly once — first sight of
+            # the id and its completion in the same update — so a failure can
+            # arrive with no in-progress phase before it.
+            if status == "failed":
+                self.console.print(Text(f"\n✗ {title} [failed]", style="bold red"))
+            else:
+                self.console.print(Text(f"\n⏳ {title}", style="cyan"))
+            if len(self._tools) > TOOL_MEMORY:
+                for stale in list(self._tools)[: len(self._tools) - TOOL_MEMORY]:
+                    del self._tools[stale]
+            return
+        had_title, had_status = seen
+        self._tools[call_id] = (title or had_title, status or had_status)
+        if status == "failed" and had_status != "failed":
+            self.console.print(Text(f"\n✗ {title or had_title} [failed]", style="bold red"))
 
     def _rule(self, who: Optional[str]) -> None:
         label = f"[bold purple]{who}[/bold purple]" if who else "[bold purple]Agent[/bold purple]"
