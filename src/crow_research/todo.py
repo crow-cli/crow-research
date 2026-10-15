@@ -102,6 +102,16 @@ class Todo:
         """The loop's exit condition, second half. Nothing left to do."""
         return not self.pending()
 
+    def __contains__(self, item_id: object) -> bool:
+        """``item_id in todo`` — is that id on the list right now?
+
+        Membership follows the list, not the id counter: a removed item's id
+        stops being a member immediately, and an id the counter has not handed
+        out yet is not a member either. Never raises — an unknown id is simply
+        absent, unlike :meth:`__getitem__`, which fails loudly.
+        """
+        return any(i.id == item_id for i in self.items)
+
     def __len__(self) -> int:
         return len(self.items)
 

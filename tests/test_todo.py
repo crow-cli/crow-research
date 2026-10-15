@@ -180,6 +180,34 @@ def test_complete_when_nothing_pending() -> None:
     assert todo.pending() == []
 
 
+# -- contains ----------------------------------------------------------
+
+
+def test_contains_is_true_for_ids_on_the_list() -> None:
+    todo = Todo()
+    a = todo.add("a")
+    b = todo.add("b")
+    assert a.id in todo
+    assert b.id in todo
+    assert len(todo) == 2
+
+
+def test_contains_is_false_for_unknown_or_removed_ids() -> None:
+    todo = Todo()
+    a = todo.add("a")
+    todo.remove(a.id)
+    assert a.id not in todo  # removed ids stop being members immediately
+    assert 99 not in todo  # unknown ids are absent, never a KeyError
+    assert "1" not in todo  # wrong type is just not there
+
+
+def test_contains_tracks_later_adds() -> None:
+    todo = Todo()
+    assert 1 not in todo
+    item = todo.add("a")
+    assert item.id in todo
+
+
 # -- render ------------------------------------------------------------
 
 
