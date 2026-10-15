@@ -36,9 +36,11 @@ what stops it.
 
 Two guards the first real run taught:
 
-* the review loop breaks on `complete and verdict == "PASS"`, so the worker is
-  never dispatched with nothing to claim (round 2 of run 1 did exactly that —
-  worker *and* verifier spent a turn each on an empty list);
+* the worker is dispatched only when there is something to claim, and the review
+  loop breaks once a complete list has a verdict on it. Round 2 of run 1 spent a
+  worker turn *and* a verifier turn on an empty list; a round resumed from the
+  file with the work already done would spend a worker turn saying "nothing to
+  do" before the verifier ever saw it;
 * when the explorer adds nothing there is no work anywhere in the system, so the
   loop waits `idle_pause` seconds instead of immediately asking the explorer
   again. The wait is raced against `turn.cancelled`, because a perpetual loop
@@ -129,7 +131,7 @@ own list, which wins. An explicit empty list means "no tools".
 
 ```sh
 uv sync
-uv run pytest -q        # 46 tests; 5 of them end-to-end over the real wire, no model
+uv run pytest -q        # 50 tests; 6 of them end-to-end over the real wire, no model
 ```
 
 The client is `repl_client.py`, a v2 port of crow's
@@ -305,20 +307,24 @@ turn, no model anywhere:
   restarted run would read.
 * **explorer additions** — the items the explorer appends to the file land on the
   list and reach the next worker prompt.
+* **resume** — a file left behind by a cancelled run, with the work done and no
+  verdict on it, sends the loop straight to the verifier: no seeding notice, no
+  worker turn, and the verifier is told there is no report rather than handed a
+  blank one.
 
 Both are driven by `STUB_STATE_<ROLE>`, a JSON patch each stub merges into the
 state file before it goes idle, so what is under test is the real contract — the
 agents writing, the orchestrator reading back — and not a stub's idea of it.
 
-`tests/test_todo.py` is 41 unit tests for the list, the document and the file:
+`tests/test_todo.py` is 44 unit tests for the list, the document and the file:
 what a document has to get wrong to be refused, and what a refused document costs
 (the last good copy goes back, the run goes on). It was written by the pipeline's
 own worker on run 1 and extended by it on runs 2, 3 and 4.
 
 ## What it has actually done
 
-Four runs against real models, each ended by `session/cancel` — all four on the
-prose protocol, before the state file replaced it:
+Five runs against real models, each ended by `session/cancel`. The first four ran
+on the prose protocol; run 5 is the first on the state file:
 
 | run | model | observed |
 |---|---|---|
@@ -326,6 +332,7 @@ prose protocol, before the state file replaced it:
 | 2 | `glm-5.3-flash` | Worker added `Todo.remove` plus 4 tests, `36 passed`, committed `28a0202` under its own session trailer. Verifier dispatched; the cancel landed before it reported. |
 | 3 | `glm-5.3-flash` | Worker added `Todo.__contains__` plus 3 tests, committed `ee44965`. Verifier reproduced it and returned `VERDICT: PASS` — and the round did not end, because the worker had wrapped its state line in backticks and the parser read it literally. `4f80fcc` is that fix. |
 | 4 | `glm-5.3-flash` | Worker added `Todo.get` plus 3 tests, committed `ff5efc1`. Verifier reproduced every claim, examined and rejected a `todo.get(True)` bool/int nitpick, and returned `VERDICT: PASS`. The round closed for the first time — `todo 1 -> done`, list empty, explorer dispatched — and the cancel landed during the explorer's turn. It closed because the model happened *not* to use backticks this round, which is exactly the fragility the state file removes: the fix for run 3 taught the parser to tolerate more prose, and the answer was to stop reading prose. |
+| 5 | `glm-5.3-flash` | The first run on the state file. The prompt became item 1 verbatim; the worker set it to `working` in the JSON, made `Todo.set` refuse an invented state, added 3 tests (`49 passed`), committed `ff29d87`, then wrote `state: done` with a note carrying the whole account — and closed its handoff with "the file parses after my write". `todo 1 -> done` was announced off a diff of the file, not off a line of prose. The verifier's first act was `fs/read` on the same file. The cancel landed mid-verification, which is the resume path the third pipeline test now pins. |
 
 ## Next
 

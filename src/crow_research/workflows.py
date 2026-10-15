@@ -197,11 +197,7 @@ The work is a todo list, and the list is a file: {path}
 
 {todo}
 
-The worker reported:
-
-{report}
-
-Your sign-off goes into that file and nowhere else:
+{report}Your sign-off goes into that file and nowhere else:
 
 ```json
 {schema}
@@ -251,6 +247,23 @@ def _findings_block(verifier_report: str) -> str:
     if not verifier_report.strip():
         return ""
     return f"The verifier's findings on the last pass:\n\n{verifier_report.strip()}\n\n"
+
+
+#: What the verifier is handed when there is no worker report to hand it: a
+#: round resumed from the file, where the work was settled before this process
+#: began. Saying so is better than an empty section, which reads as a worker
+#: that had nothing to say.
+NO_REPORT = (
+    "There is no report to check. The work was settled before this round began — "
+    "the state file outlives the process that wrote it — so the file and the "
+    "repository are the whole account of it. Verify those.\n\n"
+)
+
+
+def _report_block(worker_report: str) -> str:
+    if not worker_report.strip():
+        return NO_REPORT
+    return f"The worker reported:\n\n{worker_report.strip()}\n\n"
 
 
 def _changes(before: Todo, after: Todo) -> list[str]:
@@ -348,6 +361,12 @@ def pipeline(
     pair that cannot agree still falls through to the explorer, so a stuck round
     costs a round instead of the run.
 
+    Because the state is a file, a round can also *begin* with the work already
+    done and unsigned — a run cancelled between the worker's write and the
+    verifier's verdict. The loop picks that up where it left off: the worker is
+    dispatched only when there is something to claim, so a resumed round goes
+    straight to the verifier.
+
     ``idle_pause`` is what keeps a perpetual loop from becoming a hot one: when
     the explorer adds nothing there is no work anywhere in the system, so the
     next round would immediately ask the explorer again. It waits instead — and
@@ -365,44 +384,57 @@ def pipeline(
             turn._check()
             round_no += 1
             # -- worker -> verifier, until the verifier signs off on a complete list
+            worker_report = ""
             for _attempt in range(max_review):
                 turn._check()
-                # The exit condition, and a guard as well: a signed-off complete
-                # list has nothing for the worker to claim, and dispatching it
-                # anyway buys a turn whose whole content is "nothing to do". The
-                # first real run did exactly that — round 1's explorer added no
-                # items, so round 2 ran worker *and* verifier against an empty
-                # list before the explorer was asked again.
-                if state.complete and state.verdict == "PASS":
+                # The exit condition: the list is done and somebody has signed
+                # off on it. That is PASS, or a FAIL that reopened nothing — and
+                # in the second case the pair has no move left, because the
+                # worker has nothing to claim and the verdict is the only thing
+                # that could change. Asking the same verifier again is a slot
+                # machine, so the round falls through to the explorer, which is
+                # what ``max_review`` exists for, minus the identical exchanges.
+                #
+                # What is *not* an exit is a complete list nobody has signed off
+                # yet. The file outlives the process, so a run cancelled between
+                # the worker's write and the verifier's verdict resumes here, and
+                # the agent that owes the next move is the verifier.
+                if state.complete and state.verdict is not None:
                     break
-                if announce:
-                    await turn.notice(
-                        f"round {round_no} · {worker.label}",
-                        description=f"{len(state.pending())} pending · last verdict {state.verdict or 'none'}",
+                # The worker goes only when there is something to claim. Round 2
+                # of run 1 spent a worker turn and a verifier turn on an empty
+                # list; a resumed round would spend one saying "nothing to do"
+                # before the verifier ever saw the work.
+                if not state.complete:
+                    if announce:
+                        await turn.notice(
+                            f"round {round_no} · {worker.label}",
+                            description=f"{len(state.pending())} pending · last verdict {state.verdict or 'none'}",
+                        )
+                    worker_result = await turn.run(
+                        worker,
+                        WORKER_PROMPT.format(
+                            path=path,
+                            todo=state.render(),
+                            findings=_findings_block(verifier_report),
+                            schema=STATE_SCHEMA,
+                            rules=STATE_RULES,
+                        ),
+                        timeout=timeout,
                     )
-                worker_result = await turn.run(
-                    worker,
-                    WORKER_PROMPT.format(
-                        path=path,
-                        todo=state.render(),
-                        findings=_findings_block(verifier_report),
-                        schema=STATE_SCHEMA,
-                        rules=STATE_RULES,
-                    ),
-                    timeout=timeout,
-                )
-                last = worker_result.stop_reason
-                state, moved = await _reload(turn, path, state)
-                for line in moved:
-                    await turn.notice(line)
+                    last = worker_result.stop_reason
+                    worker_report = worker_result.report
+                    state, moved = await _reload(turn, path, state)
+                    for line in moved:
+                        await turn.notice(line)
+                    turn._check()
 
-                turn._check()
                 if announce:
                     await turn.notice(f"round {round_no} · {verifier.label}", description="signing off on the pass")
                 verifier_result = await turn.run(
                     verifier,
                     VERIFIER_PROMPT.format(
-                        path=path, todo=state.render(), report=worker_result.report,
+                        path=path, todo=state.render(), report=_report_block(worker_report),
                         schema=STATE_SCHEMA, rules=STATE_RULES,
                     ),
                     timeout=timeout,
@@ -418,7 +450,6 @@ def pipeline(
                         description=state.verdict_note or state.render(only_pending=True).splitlines()[0],
                         severity="info" if state.verdict == "PASS" else "warning",
                     )
-
             # -- the explorer adds more items to the todo
             turn._check()
             if announce:

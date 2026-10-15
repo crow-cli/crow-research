@@ -189,6 +189,44 @@ async def test_explorer_additions_reach_the_next_worker_turn() -> None:
     assert any(i.text == "second thing worth doing" and i.added_by == "explorer" for i in state.items), state.render()
 
 
+async def test_a_resumed_file_goes_straight_to_the_verifier() -> None:
+    """The file outlives the process. A run cancelled between the worker's write
+    and the verifier's sign-off resumes at the verifier — the worker is not
+    dispatched to say "nothing to do" on a list with nothing left to claim."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = state_path(tmp)
+        resumed = Todo()
+        resumed.add("already done", by="prompt")
+        resumed.set(1, "done", "settled by a run that was cancelled")
+        resumed.save(path)
+        env = {
+            **os.environ,
+            "STUB_STATE_PATH": str(path),
+            "STUB_STATE_VERIFIER": json.dumps({"verdict": "PASS", "verdict_note": "reproduced from the file"}),
+        }
+        peer = Peer(
+            Role(name="orchestrator", endpoint=Stdio(tuple(serve_pipeline(tmp)), env=env)),
+            client_factory=Recorder,
+        )
+        await peer.start(os.getcwd())
+        try:
+            result = await run_until(peer, "a prompt nobody reads", lambda c: dispatches(c).get("Explorer", 0) >= 1)
+        finally:
+            await peer.close()
+
+    client = peer.client
+    assert result.stop_reason == "cancelled", result.stop_reason
+    counts = dispatches(client)
+    assert counts.get("Worker", 0) == 0, counts
+    assert counts["Verifier"] == 1, counts
+    seen = notices(client)
+    # The file was already there, so nothing was seeded; the sign-off still landed.
+    assert not any("todo seeded" in n for n in seen), seen
+    assert any("verdict PASS" in n for n in seen), seen
+    # And the verifier was told there is no report, not handed a blank section.
+    assert "There is no report to check" in client.text_from("verifier")
+
+
 async def main() -> int:
     failures = 0
     for name, test in sorted(globals().items()):
