@@ -95,7 +95,7 @@ own list, which wins. An explicit empty list means "no tools".
 
 ```sh
 uv sync
-uv run pytest -q        # 39 tests; 5 of them end-to-end over the real wire, no model
+uv run pytest -q        # 44 tests; 5 of them end-to-end over the real wire, no model
 ```
 
 The client is `repl_client.py`, a v2 port of crow's
@@ -123,6 +123,53 @@ uv run crow-research serve --workflow chain --rounds -1 --autostart "keep poking
 A bare `--role name` uses that role's default endpoint, `crow-cli acp2` — an
 unspecialized crow agent. `--workflow chain` and `--workflow single` predate the
 pipeline and are kept because they are two lines each.
+
+## Driving it from crow-agent
+
+`crow-agent` — the `crow-client` crate — is an arbitrary ACP client: a harness is
+an argv, and the protocol is negotiated rather than declared. Point it at the
+pipeline and it spawns the orchestrator, adopts v2, and supplies the tools:
+
+```sh
+crow-agent -w /home/thomas/src/crow-research --agent /home/thomas/src/crow-research/.venv/bin/python --agent-arg /home/thomas/src/crow-research/agents/orchestrator_agent.py --agent-arg --model --agent-arg glm-5.3-flash
+```
+
+or as a harness entry in `~/.agents/crow/settings.json`, which is what the
+in-TUI `/harness` picker offers and what `defaultHarness` selects:
+
+```json
+{"id": "crow-research",
+ "label": "crow-research pipeline (glm-5.3-flash)",
+ "command": "/home/thomas/src/crow-research/.venv/bin/python",
+ "args": ["/home/thomas/src/crow-research/agents/orchestrator_agent.py",
+          "--model", "glm-5.3-flash"],
+ "env": {}}
+```
+
+`crow-agent --check-runtime` spawns and initializes without the TUI, and reports
+what the peer actually said: `initialize ok in 0.7s → crow-research acp2`. The
+`acp2` suffix is the negotiated stack, so v2 was adopted, not assumed.
+
+Three things line up with no configuration at all. **Tools**: `mcp_supply.rs`
+reads `mcpServers` from crow's settings and then from `~/.agents/crow/config.yaml`
+— the same file `mcp.from_config()` reads — and passes them on `session/new`,
+where `_tool_supply` lets the upstream supply win, so the children get exactly
+what the client handed the orchestrator. **Cancel**: `esc` is `Cmd::Interrupt`,
+which sends `session/cancel`, so the loop's only exit is a first-class key.
+**The turn**: crow-agent already treats `session/prompt` as an ack and settles
+the turn off the `idle` `state_update`, which is the same reading
+`ReplClient.send` makes.
+
+One gap, and it is the whole narration. `events.rs::parse_session_update` has no
+`notice` arm, so notices fall through to `_ => Vec::new()`: driven from
+crow-agent today the pipeline is an unexplained stream of worker prose, with
+`round 1 · verdict PASS` and `Explorer added 6 items` invisible. The fix is one
+arm mapping onto the `UiEvent::SessionNotice` that already exists and already
+renders `title — details` with severity as info/warn/error — field for field what
+`turn.notice(title, description=, severity=)` emits. Role attribution is the
+second gap: `_meta["crow/agent"]` reaches the parser and nothing reads it, so
+the three roles share one transcript instead of using the subagent rail that
+`crow/agent/session` would key into.
 
 ## The pieces
 
@@ -219,7 +266,7 @@ turn, no model anywhere:
 * **explorer additions** — the explorer's `ADD` lines land on the list and reach
   the next worker prompt.
 
-`tests/test_todo.py` is 34 unit tests for the list and the report parsers. It was
+`tests/test_todo.py` is 39 unit tests for the list and the report parsers. It was
 written by the pipeline's own worker on run 1 and extended by it on runs 2 and 3.
 
 ## What it has actually done
@@ -230,7 +277,7 @@ Three runs against real models, each ended by `session/cancel`:
 |---|---|---|
 | 1 | `deepseek-v4-pro` | Worker wrote `tests/test_todo.py`, 30 passed, committed `5d8b379`. Verifier reproduced every claim, found nothing, `VERDICT: PASS`. Explorer added 0 items, so round 2 ran worker and verifier against an empty list — the defect the `todo.complete` guard now prevents — and then added 6 (prior art: pydantic-ai, todo.txt, langchain deepagents, opencode, Claude Code todo-tracking and agent-teams). Round 3's worker was mid-implementation when the cancel landed; its in-flight edits broke 2 tests and are kept in `stash@{0}` as evidence. |
 | 2 | `glm-5.3-flash` | Worker added `Todo.remove` plus 4 tests, `36 passed`, committed `28a0202` under its own session trailer. Verifier dispatched; the cancel landed before it reported. |
-| 3 | `glm-5.3-flash` | Worker added `Todo.__contains__` plus 3 tests, `39 passed`. |
+| 3 | `glm-5.3-flash` | Worker added `Todo.__contains__` plus 3 tests, committed `ee44965`. Verifier reproduced it and returned `VERDICT: PASS` — and the round did not end, because the worker had wrapped its state line in backticks and the parser read it literally. `4f80fcc` is that fix. |
 
 ## Next
 
