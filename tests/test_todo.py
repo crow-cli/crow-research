@@ -325,6 +325,55 @@ def test_parse_verdict_ignores_unknown_or_empty_words() -> None:
     assert parse_verdict("VERDICT: PASS\nVERDICT:") == "PASS"
 
 
+# -- markdown decoration ------------------------------------------------
+#
+# The prompts show the report format inside backticks, so the models echo it
+# inside backticks. Run 3's worker reported the line below verbatim and the list
+# never moved: the verifier signed off with `VERDICT: PASS`, the item it signed
+# off on was still pending, and the round could not end.
+
+
+def test_parse_updates_reads_a_backtick_wrapped_line() -> None:
+    report = "`TODO 1 done added Todo.__contains__ with membership tests; full suite green`"
+    assert parse_updates(report) == [
+        (1, DONE, "added Todo.__contains__ with membership tests; full suite green")
+    ]
+
+
+def test_parse_updates_reads_decoration_around_the_keyword_and_state() -> None:
+    report = "\n".join(
+        [
+            "**TODO 2 done** bolded, then commentary",
+            "- TODO 3 blocked cannot run",
+            "> TODO 4 working quoted",
+        ]
+    )
+    assert parse_updates(report) == [
+        (2, DONE, "bolded, then commentary"),
+        (3, BLOCKED, "cannot run"),
+        (4, WORKING, "quoted"),
+    ]
+
+
+def test_parse_new_items_reads_a_decorated_add_line() -> None:
+    assert parse_new_items("`ADD write the docs`") == ["write the docs"]
+    assert parse_new_items("**ADD** search the prior art") == ["search the prior art"]
+
+
+def test_parse_verdict_reads_a_decorated_verdict() -> None:
+    assert parse_verdict("`VERDICT: PASS`") == "PASS"
+    assert parse_verdict("**VERDICT**: FAIL") == "FAIL"
+    assert parse_verdict("VERDICT: `UNVERIFIED`") == "UNVERIFIED"
+
+
+def test_decoration_does_not_let_prose_or_junk_through() -> None:
+    assert parse_updates("`the word TODO 9 done appears mid-sentence`") == []
+    assert parse_updates("`TODO not-a-number done x`") == []
+    assert parse_updates("`TODO 5 frobnicate x`") == []
+    assert parse_new_items("`not an add line`") == []
+    assert parse_verdict("`VERDICT: MAYBE`") is None
+
+
 def _main() -> int:
     failures = 0
     for name, test in sorted(globals().items()):

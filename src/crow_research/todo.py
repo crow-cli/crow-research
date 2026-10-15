@@ -127,6 +127,29 @@ class Todo:
         return head + "\n" + "\n".join(i.render() for i in shown)
 
 
+#: Markdown decoration an agent wraps a report line in. The prompts show the
+#: format inside backticks, so the models echo it inside backticks — and a
+#: literal read of that line is a list that never moves. Run 3's worker reported
+#: ```TODO 1 done …``` and the verifier's ``VERDICT: PASS`` could not end the
+#: round, because the item it signed off on was still pending.
+_DECORATION = "`*#>- \t"
+
+
+def _bare(line: str) -> str:
+    """One report line with its markdown decoration removed from both ends."""
+    return line.strip().strip(_DECORATION).strip()
+
+
+def _tok(word: str) -> str:
+    """A report keyword or state with its own decoration removed.
+
+    ``_bare`` only reaches the ends of the line, so a model that bolds the
+    format the prompt showed it — ``**TODO 2 done** and then some`` — still has
+    decoration wrapped around the tokens that decide the parse.
+    """
+    return word.strip(_DECORATION)
+
+
 def parse_updates(report: str) -> list[tuple[int, str, str]]:
     """``(id, state, note)`` triples out of an agent's report.
 
@@ -143,14 +166,14 @@ def parse_updates(report: str) -> list[tuple[int, str, str]]:
     """
     out: list[tuple[int, str, str]] = []
     for line in (report or "").splitlines():
-        parts = line.strip().split(None, 3)
-        if len(parts) < 3 or parts[0].upper() != "TODO":
+        parts = _bare(line).split(None, 3)
+        if len(parts) < 3 or _tok(parts[0]).upper() != "TODO":
             continue
         try:
-            item_id = int(parts[1])
+            item_id = int(_tok(parts[1]))
         except ValueError:
             continue
-        state = parts[2].lower()
+        state = _tok(parts[2]).lower()
         if state not in (OPEN, WORKING, DONE, BLOCKED):
             continue
         out.append((item_id, state, parts[3] if len(parts) > 3 else ""))
@@ -161,8 +184,8 @@ def parse_new_items(report: str) -> list[str]:
     """The explorer's additions: ``ADD <text>`` lines, in order."""
     out: list[str] = []
     for line in (report or "").splitlines():
-        parts = line.strip().split(None, 1)
-        if len(parts) == 2 and parts[0].upper() == "ADD":
+        parts = _bare(line).split(None, 1)
+        if len(parts) == 2 and _tok(parts[0]).upper() == "ADD":
             out.append(parts[1].strip())
     return out
 
@@ -175,9 +198,9 @@ def parse_verdict(report: str) -> Optional[str]:
     """
     verdict: Optional[str] = None
     for line in (report or "").splitlines():
-        head, sep, rest = line.strip().partition(":")
-        if sep and head.upper().lstrip("#* ") == "VERDICT":
-            word = rest.strip().split(None, 1)[0].upper() if rest.strip() else ""
+        head, sep, rest = _bare(line).partition(":")
+        if sep and _tok(head).upper() == "VERDICT":
+            word = _tok(rest.strip().split(None, 1)[0]).upper() if rest.strip() else ""
             if word in ("PASS", "FAIL", "UNVERIFIED"):
                 verdict = word
     return verdict
