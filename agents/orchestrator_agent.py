@@ -35,12 +35,11 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from crow_research.agent import OrchestratorAgent, Workflow, serve_stdio
+from crow_research.agent import OrchestratorAgent, serve_stdio
 from crow_research.roles import BUILTIN, Role
-from crow_research.todo import Todo, parse_new_items
+from crow_research.todo import Todo
 from crow_research.transport import Stdio
 from crow_research import workflows
-from crow_research.turn import Turn
 
 #: This file's directory: where the agents in the pipeline live.
 AGENTS = Path(__file__).resolve().parent
@@ -80,20 +79,12 @@ def build(args: argparse.Namespace) -> OrchestratorAgent:
     worker = agent_role("worker", args.model)
     verifier = agent_role("verifier", args.model)
     explorer = agent_role("explorer", args.model)
+    # The todo outlives a turn — the explorer's items are what the next round
+    # works on — so it is built here, once, and the prompt that arrives on
+    # ``session/prompt`` seeds it.
     todo = Todo()
-    inner = workflows.pipeline(worker, verifier, explorer, todo, timeout=args.timeout)
-
-    async def workflow(turn: Turn) -> Optional[str]:
-        if not len(todo):
-            # The prompt is where the work goes: it seeds the list, and after
-            # this the agents own it.
-            items = parse_new_items(turn.prompt) or [turn.prompt]
-            todo.extend(items, by="prompt")
-            await turn.notice(f"todo seeded with {len(todo)} items", description=todo.render(only_pending=True))
-        return await inner(turn)
-
     return OrchestratorAgent(
-        workflow,
+        workflows.pipeline(worker, verifier, explorer, todo, timeout=args.timeout),
         name=args.name,
         title=args.title,
         mcp_servers=None,  # None -> crow's own configured tool supply, per child

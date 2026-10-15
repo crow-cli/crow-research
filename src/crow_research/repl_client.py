@@ -310,21 +310,28 @@ def _text_of(content: Any) -> str:
 async def _amain(argv: list[str]) -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(prog="python -m crow_research.repl_client", description=__doc__.splitlines()[0])
-    parser.add_argument("prompt", nargs="*", help="one prompt to send, then exit (omit for an interactive REPL)")
+    parser = argparse.ArgumentParser(
+        prog="python -m crow_research.repl_client",
+        description=__doc__.splitlines()[0],
+        epilog="The positionals are the agent command, exactly as ReplClient(cmd, *args) takes it: "
+               "python -m crow_research.repl_client -p 'ADD fix the parser' "
+               f"{sys.executable} agents/orchestrator_agent.py --debug",
+    )
+    parser.add_argument("command", nargs="*", help=f"the agent to spawn (default: {DEFAULT_AGENT})")
+    parser.add_argument("-p", "--prompt", default=None,
+                        help="send one prompt to the workflow and exit; omit for an interactive REPL")
     parser.add_argument("--cwd", default=None, help="working directory for the agent session")
     parser.add_argument("--timeout", type=float, default=None, help="seconds to wait for the turn to end")
     parser.add_argument("--cancel-after", type=float, default=None,
                         help="send session/cancel this many seconds in — how you stop a perpetual pipeline")
     parser.add_argument("--quiet", action="store_true", help="no rendering; conversation only")
-    args, command = parser.parse_known_args(argv)
-    #: Anything the parser did not claim is the agent command — the one thing a
-    #: REPL client is constructed from. Default: the pipeline agent in this repo.
-    agent = command or [str(DEFAULT_AGENT)]
+    args = parser.parse_args(argv)
+    agent = args.command or [str(DEFAULT_AGENT)]
     client = ReplClient(agent[0], *agent[1:], cwd=args.cwd or str(Path.cwd()), quiet=args.quiet)
+    prompt = args.prompt or (None if sys.stdin.isatty() else sys.stdin.read().strip())
     try:
-        if args.prompt:
-            task = asyncio.ensure_future(client.send(" ".join(args.prompt), timeout=args.timeout))
+        if prompt:
+            task = asyncio.ensure_future(client.send(prompt, timeout=args.timeout))
             if args.cancel_after:
                 await asyncio.sleep(args.cancel_after)
                 await client.cancel()

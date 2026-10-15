@@ -24,6 +24,7 @@ from . import workflows
 from .agent import OrchestratorAgent, Workflow, serve_stdio
 from .peer import Peer, PeerClient
 from .roles import BUILTIN, Role, resolve
+from .todo import Todo
 from .transport import Stdio
 
 DEFAULT_CHAIN = ("worker", "verifier")
@@ -55,6 +56,17 @@ def build_workflow(args: argparse.Namespace) -> Workflow:
         inner: Workflow = workflows.single(roles[0], timeout=args.timeout)
     elif args.workflow == "chain":
         inner = workflows.chain(*roles, **common)
+    elif args.workflow == "pipeline":
+        by = {r.name: r for r in roles}
+        missing = [n for n in ("worker", "verifier", "explorer") if n not in by]
+        if missing:
+            raise SystemExit(f"--workflow pipeline needs a role for each of: {', '.join(missing)}")
+        # The todo outlives the turn: the explorer's items are what the next
+        # round works on, so it is built once here rather than per prompt.
+        inner = workflows.pipeline(
+            by["worker"], by["verifier"], by["explorer"], Todo(),
+            timeout=args.timeout, idle_pause=args.idle_pause,
+        )
     else:
         raise SystemExit(f"unknown workflow {args.workflow!r}")
     if args.rounds is not None:
@@ -120,7 +132,7 @@ def parser() -> argparse.ArgumentParser:
     sub = top.add_subparsers(dest="command", required=True)
 
     def common(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--workflow", choices=("chain", "single"), default="chain")
+        p.add_argument("--workflow", choices=("chain", "single", "pipeline"), default="chain")
         p.add_argument(
             "--role",
             action="append",
@@ -131,6 +143,8 @@ def parser() -> argparse.ArgumentParser:
         p.add_argument("--timeout", type=float, default=None, help="seconds to wait for one agent's turn")
         p.add_argument("--compact", action="store_true", help="ask each agent for an interagent summary to hand off")
         p.add_argument("--rounds", type=int, default=None, help="repeat the workflow N times (-1 = forever)")
+        p.add_argument("--idle-pause", type=float, default=30.0,
+                       help="seconds to wait when the pipeline has no work and the explorer added none")
         p.add_argument("--cwd", default=None)
 
     serve = sub.add_parser("serve", help="run the orchestrator as an ACP v2 agent on stdio")

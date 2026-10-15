@@ -9,7 +9,9 @@ carried the previous agent's report into the next one.
 
 ``python examples/stub_agent.py <name>`` — the name is what it says it is, so a
 cast of stubs is distinguishable in the relayed stream without any env plumbing.
-``STUB_DELAY`` seconds of sleep before it answers makes cancellation testable.
+``STUB_DELAY`` seconds of sleep before it answers makes cancellation testable,
+and ``STUB_REPLY_<NAME>`` (or ``STUB_REPLY``) replaces the echo with a scripted
+report, which is how a test gives each role the words the pipeline parses.
 """
 
 from __future__ import annotations
@@ -76,7 +78,13 @@ class StubAgent:
         await emit(v2.schema.RunningSessionStateUpdate())
         if delay := float(os.environ.get("STUB_DELAY", "0")):
             await asyncio.sleep(delay)
-        reply = f"{self.name} heard: {heard[:4000]}"
+        # A scripted reply, per role: ``STUB_REPLY_WORKER`` beats ``STUB_REPLY``
+        # beats the echo. One shared env can then give a whole cast different
+        # words, which is what a pipeline test needs — the worker has to say
+        # ``TODO 1 done`` and the verifier ``VERDICT: PASS`` in the same run.
+        reply = os.environ.get(f"STUB_REPLY_{self.name.upper()}") or os.environ.get("STUB_REPLY")
+        if reply is None:
+            reply = f"{self.name} heard: {heard[:4000]}"
         mid = f"{session_id}-agent-{next(self._ids)}"
         await emit(v2.schema.AgentMessageChunk(message_id=mid, content=v2.schema.TextContentBlock(text=reply)))
         await emit(

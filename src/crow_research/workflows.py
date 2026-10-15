@@ -213,6 +213,7 @@ def pipeline(
     timeout: Optional[float] = None,
     max_review: int = 5,
     announce: bool = True,
+    idle_pause: float = 30.0,
 ) -> Workflow:
     """The loop: worker -> verifier until sign-off on a complete list, then the
     explorer adds more items, then round again. It does not end by itself;
@@ -221,6 +222,12 @@ def pipeline(
     ``max_review`` bounds one round's worker/verifier exchange, not the loop. A
     pair that cannot agree still falls through to the explorer, so a stuck round
     costs a round instead of the run.
+
+    ``idle_pause`` is what keeps a perpetual loop from becoming a hot one: when
+    the explorer adds nothing there is no work anywhere in the system, so the
+    next round would immediately ask the explorer again. It waits instead — and
+    the wait is cut short by a cancel, because a loop that ignores
+    ``session/cancel`` for thirty seconds is a loop that does not stop.
     """
 
     async def workflow(turn: Turn) -> Optional[str]:
@@ -228,13 +235,29 @@ def pipeline(
         verdict: Optional[str] = None
         verifier_report = ""
         round_no = 0
+        if not len(todo):
+            # The prompt is where the work comes from: it seeds the list, and
+            # from here the agents own it. ``ADD`` lines are honored so one
+            # prompt can hand over several items; otherwise the whole prompt is
+            # the first one.
+            todo.extend(parse_new_items(turn.prompt) or [turn.prompt], by="prompt")
+            if announce:
+                await turn.notice(
+                    f"todo seeded with {len(todo)} items", description=todo.render(only_pending=True)
+                )
         while True:
             turn._check()
             round_no += 1
             # -- worker -> verifier, until the verifier signs off on a complete list
             for _attempt in range(max_review):
                 turn._check()
-                if verdict == "PASS" and todo.complete:
+                # The exit condition, and a guard as well: a complete list has
+                # nothing for the worker to claim, and dispatching it anyway
+                # buys a turn whose whole content is "nothing to do". The first
+                # real run did exactly that — round 1's explorer added no items,
+                # so round 2 ran worker *and* verifier against an empty list
+                # before the explorer was asked again.
+                if todo.complete:
                     break
                 if announce:
                     await turn.notice(
@@ -289,5 +312,11 @@ def pipeline(
                     description="; ".join(i.text[:60] for i in added) or "nothing added — the loop continues",
                 )
             verdict, verifier_report = None, ""
+            if not added and idle_pause:
+                try:
+                    await asyncio.wait_for(turn.cancelled.wait(), timeout=idle_pause)
+                except asyncio.TimeoutError:
+                    pass
+                turn._check()
 
     return workflow
