@@ -70,6 +70,18 @@ class Todo:
             item.note = note.strip()
         return item
 
+    def remove(self, item_id: int) -> Item:
+        """Delete one item by id and return it.
+
+        Ids are never reused: ``add`` keeps counting past every id ever handed
+        out, so a removed id cannot be silently resurrected by the next item —
+        an agent holding a stale reference to it fails loudly instead of
+        mutating something new.
+        """
+        item = self[item_id]
+        self.items.remove(item)
+        return item
+
     def __getitem__(self, item_id: int) -> Item:
         for item in self.items:
             if item.id == item_id:

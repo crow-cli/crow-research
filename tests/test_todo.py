@@ -108,6 +108,52 @@ def test_set_unknown_id_raises() -> None:
         todo.set(99, DONE)
 
 
+# -- remove ------------------------------------------------------------
+
+
+def test_remove_deletes_only_that_item() -> None:
+    todo = Todo()
+    a = todo.add("a")
+    b = todo.add("b")
+    c = todo.add("c")
+    removed = todo.remove(b.id)
+    assert removed is b
+    assert [i.id for i in todo.items] == [a.id, c.id]
+    assert len(todo) == 2
+    with pytest.raises(KeyError):
+        todo[b.id]
+
+
+def test_remove_works_on_any_state() -> None:
+    todo = Todo()
+    a = todo.add("a")
+    b = todo.add("b")
+    todo.set(a.id, DONE, "finished")
+    todo.set(b.id, BLOCKED, "dead end")
+    todo.remove(a.id)
+    todo.remove(b.id)
+    assert len(todo) == 0
+    assert todo.render() == "(the todo list is empty)"
+
+
+def test_remove_unknown_id_raises() -> None:
+    todo = Todo()
+    item = todo.add("only item")
+    with pytest.raises(KeyError):
+        todo.remove(99)
+    todo.remove(item.id)
+    with pytest.raises(KeyError):
+        todo.remove(item.id)  # already gone
+
+
+def test_remove_does_not_reuse_ids() -> None:
+    todo = Todo()
+    first = todo.add("a")
+    todo.add("b")
+    todo.remove(first.id)
+    assert todo.add("c").id == 3  # ids never walk backwards
+
+
 # -- pending / claimed / complete -------------------------------------
 
 
