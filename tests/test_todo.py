@@ -116,6 +116,39 @@ def test_set_unknown_id_raises() -> None:
         todo.set(99, DONE)
 
 
+def test_set_refuses_a_state_that_is_not_one_of_the_four() -> None:
+    """The in-memory API holds the contract the file already enforces on load:
+    an invented state is a ``ValueError`` at the source instead of surfacing
+    later as a KeyError out of ``Item.render`` when the list is drawn."""
+    todo = Todo()
+    item = todo.add("build the parser")
+    for state in ("wip", "finished", "", "open ", 3, None):
+        with pytest.raises(ValueError):
+            todo.set(item.id, state)
+    assert item.state == OPEN  # a refused set leaves the item untouched
+    assert item.render() == "1. [ ] build the parser"  # render never sees it
+
+
+def test_set_forgives_case_but_not_spelling() -> None:
+    """One contract for both paths: whatever loads also sets. Case is a typing
+    habit; spelling is the thing that has to be right."""
+    todo = Todo()
+    item = todo.add("build the parser")
+    todo.set(item.id, "Done")
+    assert item.state == DONE
+    with pytest.raises(ValueError):
+        todo.set(item.id, "COMPLETE")
+
+
+def test_set_says_what_is_wrong() -> None:
+    """The refusal names the bad state and the four that exist — it is read by
+    whoever is watching the run, not by a log parser."""
+    todo = Todo()
+    todo.add("a")
+    with pytest.raises(ValueError, match="state 'wip', expected one of open/working/done/blocked"):
+        todo.set(1, "wip")
+
+
 # -- remove ------------------------------------------------------------
 
 

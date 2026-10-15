@@ -143,8 +143,17 @@ class Todo:
         return [self.add(t, by=by) for t in texts if (t or "").strip()]
 
     def set(self, item_id: int, state: str, note: str = "") -> Item:
+        """Claim or settle one item.
+
+        The same contract the file enforces on load: a state that is not one of
+        the four is refused here as a ``ValueError`` instead of surfacing later
+        as a ``KeyError`` out of :meth:`Item.render`. Case is forgiven —
+        ``Done`` reads as ``done``; invention is not.
+        """
+        if not isinstance(state, str) or state.lower() not in STATES:
+            raise ValueError(f"state {state!r}, expected one of {'/'.join(STATES)}")
         item = self[item_id]
-        item.state = state
+        item.state = state.lower()
         if note:
             item.note = note.strip()
         return item
