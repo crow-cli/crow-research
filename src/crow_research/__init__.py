@@ -23,7 +23,7 @@ default role endpoint is ``crow-cli acp2`` for the same reason, and any other v2
 agent — spawned or already served on a socket — works exactly as well.
 """
 
-from .agent import OrchestratorAgent, Session, Workflow, serve_stdio
+from .agent import OrchestratorAgent, Session, Workflow, serve_http, serve_stdio
 from .peer import Peer, PeerClient, PeerExited, TurnResult
 from .roles import BUILTIN, EXPLORER, RESEARCHER, VERIFIER, WORKER, Role, resolve
 from .todo import Item, Todo, state_path
@@ -63,6 +63,7 @@ __all__ = [
     "resolve",
     "rounds",
     "select",
+    "serve_http",
     "serve_stdio",
     "single",
     "state_path",

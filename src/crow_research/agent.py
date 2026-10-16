@@ -321,3 +321,39 @@ class OrchestratorAgent:
 async def serve_stdio(agent: OrchestratorAgent) -> None:
     """Run ``agent`` on this process's stdio — what an upstream client spawns."""
     await v2.run_agent(agent)
+
+
+async def serve_http(
+    factory: Callable[[Any], OrchestratorAgent],
+    host: str = "127.0.0.1",
+    port: int = 2771,
+    *,
+    path: str = "/acp",
+    shutdown_trigger: Optional[Callable[[], Awaitable[None]]] = None,
+) -> None:
+    """Serve the agent over Streamable HTTP + WebSocket at ``http://host:port{path}``.
+
+    ``factory`` is called once per connection, with that connection — the router
+    owns a fresh agent per client, the same shape ``crow-cli acp2 --http`` uses.
+    Only a v2 factory is configured, so a v1 client is refused at negotiation
+    rather than half-served.
+
+    ``shutdown_trigger``, if given, is awaited to end the server gracefully —
+    hypercorn's own seam, and the only way to stop a served agent short of
+    killing the process.
+
+    The imports are local so the core stays importable without hypercorn; a
+    stdio agent never pays for the HTTP stack.
+    """
+    import hypercorn.asyncio
+    from acp.experimental.negotiation import AgentProtocolRouter
+    from acp.http.asgi import create_asgi_app
+    from hypercorn.config import Config as HypercornConfig
+
+    app = create_asgi_app(AgentProtocolRouter(v2=factory), path=path)
+    hcfg = HypercornConfig()
+    hcfg.bind = [f"{host}:{port}"]
+    # Streamable HTTP wants HTTP/2; hypercorn negotiates h2c/h2.
+    hcfg.alpn_protocols = ["h2", "http/1.1"]
+    log.info("serving ACP v2 on http://%s:%d%s", host, port, path)
+    await hypercorn.asyncio.serve(app, hcfg, shutdown_trigger=shutdown_trigger)

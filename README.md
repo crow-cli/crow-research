@@ -130,7 +130,7 @@ own list, which wins. An explicit empty list means "no tools".
 
 ```sh
 uv sync
-uv run pytest -q        # 50 tests; 6 of them end-to-end over the real wire, no model
+uv run pytest -q        # 52 tests; 8 of them end-to-end over the real wire, no model
 ```
 
 The client is `repl_client.py`, a v2 port of crow's
@@ -146,6 +146,27 @@ exit the loop has. Without `-p` you get an interactive REPL, where Ctrl-C
 cancels the turn in flight and Ctrl-D exits; inbound `_meta` renders a rich
 rule per speaking role, so the stream reads as Worker, then Verifier, then
 Explorer.
+
+### Served instead of spawned
+
+The same agent file also serves, for a client that dials rather than forks:
+
+```sh
+uv run python agents/orchestrator_agent.py --http --port 2772
+# -> ws://127.0.0.1:2772/acp   (Streamable HTTP + WebSocket, one agent per connection)
+```
+
+`serve_http` hands `AgentProtocolRouter` a *factory*, so every connection gets
+its own `OrchestratorAgent`; only a v2 factory is configured, so a v1 client is
+refused at negotiation rather than half-served. The default port is 2772 because
+2771 is `crow-cli acp2`'s own default and the two are exactly the agents most
+likely to be up at once. Nothing about the pipeline changes on a socket — the
+role stamps, the notices and `session/cancel` all arrive as they do over stdio,
+which is what `tests/test_http.py` asserts.
+
+`crow-agent` will not dial it: a harness there is an argv (`harness.rs` is
+`{command, args, env}`), so the extension spawns the agent over stdio and
+`--http` is for clients that speak Streamable HTTP or WebSocket.
 
 The generic CLI is still there for pointing the orchestrator at agents that are
 not the specialized cast:
@@ -215,7 +236,7 @@ lazily, inside `_tool_supply`.
 
 | module | what it is |
 |---|---|
-| `agent.py` | `OrchestratorAgent(workflow, name=, title=, version=, default_cwd=, autostart=, mcp_servers=)` — a v2 agent upstream whose react loop is the workflow you pass in. `prompt` acks with a `message_id`, echoes the user message, and runs the workflow as a task; the task is shielded so even a cancelled turn writes its own `idle`. One foreground turn per session. |
+| `agent.py` | `OrchestratorAgent(workflow, name=, title=, version=, default_cwd=, autostart=, mcp_servers=)` — a v2 agent upstream whose react loop is the workflow you pass in — plus `serve_stdio(agent)` and `serve_http(factory, host, port)`. `prompt` acks with a `message_id`, echoes the user message, and runs the workflow as a task; the task is shielded so even a cancelled turn writes its own `idle`. One foreground turn per session. |
 | `turn.py` | `Turn` — the workflow's whole world: `emit`/`say`/`notice` upstream, `peer`/`run` downstream, `cancelled` for the seams. Peers are registered before `start` so a cancel can reach them; `run` races the child against the cancel and lets go of it when the cancel wins. Child `state_update`s stay downstream by default. |
 | `peer.py` | `Peer` — one downstream agent: connect, handshake, session, turn, cancel, teardown. `PeerClient` records updates and folds running→idle into a per-session stop queue registered *before* the send, auto-allows permissions, declines elicitation. `TurnResult` is what a step produced; `.report` is what a handoff carries. |
 | `todo.py` | `Item`, `Todo` (`add`/`extend`/`set`/`remove`/`get`/`pending`/`complete`/`render`/`in`), the document (`to_dict`/`from_dict`, validating) and the file (`load`/`save`, atomic). `STATE_FILE` and `state_path(cwd)`. |
@@ -289,9 +310,9 @@ render "who is speaking" without a protocol change — and a client that ignores
 
 ## What is tested
 
-`tests/test_orchestrator.py` and `tests/test_pipeline.py` run the real thing over
-the real wire — the orchestrator spawned as a child, stub agents spawned by it in
-turn, no model anywhere:
+`tests/test_orchestrator.py`, `tests/test_pipeline.py` and `tests/test_http.py`
+run the real thing over the real wire — the orchestrator spawned as a child or
+served on a socket, stub agents spawned by it in turn, no model anywhere:
 
 * **chain** — both agents speak over one upstream session, in order; every update
   carries its role tag; the children's `state_update`s stay downstream (exactly
@@ -311,10 +332,15 @@ turn, no model anywhere:
   verdict on it, sends the loop straight to the verifier: no seeding notice, no
   worker turn, and the verifier is told there is no report rather than handed a
   blank one.
+* **http** — the same loop served by `serve_http` and dialled by a `Peer` over
+  `ws://…/acp`: role stamps, notices and `session/cancel` all survive the socket,
+  and `agents/orchestrator_agent.py --http --port N` binds, negotiates v2 and
+  opens a session.
 
-Both are driven by `STUB_STATE_<ROLE>`, a JSON patch each stub merges into the
-state file before it goes idle, so what is under test is the real contract — the
-agents writing, the orchestrator reading back — and not a stub's idea of it.
+The pipeline tests are driven by `STUB_STATE_<ROLE>`, a JSON patch each stub
+merges into the state file before it goes idle, so what is under test is the real
+contract — the agents writing, the orchestrator reading back — and not a stub's
+idea of it.
 
 `tests/test_todo.py` is 44 unit tests for the list, the document and the file:
 what a document has to get wrong to be refused, and what a refused document costs

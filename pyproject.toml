@@ -10,6 +10,9 @@ requires-python = ">=3.13"
 dependencies = [
     "agent-client-protocol>=1.0.0rc3",
     "crow-cli>=0.1.48",
+    # `serve_http` imports it directly; crow-cli already brings it, but a direct
+    # import is a direct dependency.
+    "hypercorn>=0.18",
 ]
 
 [project.scripts]
