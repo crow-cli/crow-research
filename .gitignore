@@ -11,3 +11,8 @@ wheels/
 
 # The pipeline's state: the todo file the agents edit
 .crow-research/
+
+# Prior art the explorer cloned: 54 MB of somebody else's repository, kept to
+# read, not ours to version. The explorer's own rules now say scratch goes
+# outside the repo; this predates that fix and stays put because it is useful.
+research/
