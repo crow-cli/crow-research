@@ -66,7 +66,10 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       sections of crow's 21-section prompt (assert the char count and that
       `patch_section` did not raise); `--help` works; stdio and `--http` both serve.
 
-- [ ] **Explorer contract: idea bundle + target rubrics.** The explorer already
+- [ ] **Explorer contract: idea bundle + target rubrics.** (prompts done in
+      Phase 4 — ROLE/FINDINGS carry the idea contract and the no-execution rule,
+      `EXPLORER_PROMPT` grows `{campaign}` + `_idea_contract_block`; the wire test
+      below is PLAN 7.1) The explorer already
       decides the next round (commit `be16d27`). It now also writes an `idea` —
       title, falsifiable hypothesis, ordered plan, and the `target_rubrics` the
       verifier will check — and its items carry those rubrics. Read-only in the
@@ -75,7 +78,11 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       an idea + rubrics; the wire test asserts they land in the file and reach the
       verifier's dispatch prompt.
 
-- [ ] **Worker contract: execute against the evaluator.** Append-only
+- [ ] **Worker contract: execute against the evaluator.** (prompts done in
+      Phase 4 — ROLE/REPORT carry the experiment contract and an ATTEMPT section,
+      `WORKER_PROMPT` grows `{campaign}` + `_experiment_block` naming the next free
+      index and the evaluator; the gate itself is unit-tested in `test_campaign.py`
+      and its wire test is PLAN 7.3) Append-only
       `program_<idx>`, never overwrite; run the task's evaluator; write
       `metrics`, `correct`, and rubric evidence into an `attempt`. Two
       independent gates, as in the paper: all-rubrics-pass closes the contract,
@@ -84,7 +91,11 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       only when the score is strictly higher and `correct` is true; unit test on
       the gate, wire test on the dispatch.
 
-- [ ] **Verifier contract: check the rubrics it was given.** The orchestrator
+- [ ] **Verifier contract: check the rubrics it was given.** (prompts done in
+      Phase 4 — ROLE/VERDICT carry the scaffold contract and a RUBRICS section,
+      `VERIFIER_PROMPT` grows `{campaign}` + `_scaffold_block` showing the
+      pre-created statuses; the orchestrator pre-creating them is PLAN 5.3 and the
+      wire test is PLAN 7.1) The orchestrator
       pre-creates the rubric scaffold (`pass: false`, empty evidence) before the
       verifier is dispatched; the verifier fills only `pass`, `evidence` and
       `next_recommendation`. It does not invent criteria and does not edit.

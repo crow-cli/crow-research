@@ -42,6 +42,11 @@ AGENTS = ROOT / "agents"
 #: orchestrator tests, which drive them over a real socket.
 NEW = ("drafter", "writer")
 
+#: Every role with an agent file behind it. The render assertions run over all of
+#: them, not just the new two: a contract that grows in one file and silently
+#: stops applying in another is the failure this catches.
+CAST = ("worker", "verifier", "explorer", "drafter", "writer")
+
 #: ``crow-cli acp2`` binds this one on this machine, and the orchestrator owns its
 #: own default, so no child agent may take either.
 CROW_CLI_ACP2_PORT = 2771
@@ -134,7 +139,7 @@ def test_an_unknown_role_is_still_a_working_role():
 # --- 3.2 / 3.3 the prompts are crow's prompt, edited ------------------------
 
 
-@pytest.mark.parametrize("name", NEW)
+@pytest.mark.parametrize("name", CAST)
 def test_the_agent_file_renders_crows_prompt_edited(name, config, tmp_path):
     module = load_agent(name)
     base = default_system_prompt(config, str(tmp_path), None)
@@ -176,7 +181,7 @@ def test_the_agent_file_renders_crows_prompt_edited(name, config, tmp_path):
             assert after[section] == text, f"{name} changed <{section}> without saying so"
 
 
-@pytest.mark.parametrize("name", NEW)
+@pytest.mark.parametrize("name", CAST)
 def test_the_added_section_sits_after_important(name, config, tmp_path):
     """Placement is the reason ``insert_section`` exists: a contract dangling at
     the end of 19k characters reads as an afterthought."""
@@ -201,7 +206,7 @@ def test_patch_section_still_raises_on_a_section_crow_does_not_have():
 # --- 3.4 the command line ---------------------------------------------------
 
 
-@pytest.mark.parametrize("name", NEW)
+@pytest.mark.parametrize("name", CAST)
 def test_the_agent_file_help_runs(name):
     done = subprocess.run([sys.executable, str(AGENTS / f"{name}_agent.py"), "--help"],
                           capture_output=True, text=True)

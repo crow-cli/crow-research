@@ -154,6 +154,14 @@ async def test_explorer_additions_reach_the_next_worker_turn() -> None:
             "STUB_STATE_PATH": str(state_path(tmp)),
             "STUB_STATE_WORKER": json.dumps({"items": [{"id": 1, "state": "done"}]}),
             "STUB_STATE_VERIFIER": json.dumps({"verdict": "PASS"}),
+            # The worker stays unscripted so it echoes its prompt and the list it
+            # was handed is visible in the stream — that echo is what the
+            # "second thing worth doing" assertion below reads. The verifier gets
+            # a reply because its report is embedded verbatim in the explorer's
+            # dispatch, and an echoed prompt nested inside an echoed prompt
+            # nested inside a third grows past the stub's echo limit. Nothing
+            # here asserts on the verifier's wording.
+            "STUB_REPLY_VERIFIER": "every claim reproduced",
             # No id: appended under the next free one, which is what an agent
             # does when it adds work rather than settling it.
             "STUB_STATE_EXPLORER": json.dumps(

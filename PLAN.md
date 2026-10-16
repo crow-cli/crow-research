@@ -186,35 +186,71 @@ literal) and fails on any collision with another agent or with `crow-cli acp2`.
 
 **3.5** ✅ Commit.
 
-## Phase 4 — the three existing contracts grow
+## Phase 4 — the three existing contracts grow  ✅ DONE (2026-10-15, 148 passed)
 
-**4.1** `explorer_agent.py`: the `FINDINGS` section becomes an idea contract —
+Evidence: the explorer's ROLE/FINDINGS and module docstring grow the idea
+contract (falsifiable hypothesis, rubrics the verifier can check unaided, at
+least one of each type, stable ids, gated `conclusions`, and *no execution while
+ideating*); the worker's ROLE/REPORT grow the experiment contract (append-only
+`program_<idx>`, the task's evaluator and nothing else, `metrics`/`correct`
+copied verbatim, an honest `stop_reason`, rubric `pass`/`evidence` left at the
+scaffold, no `best` and no `conclusions`, a failing candidate recorded as a
+result) plus an ATTEMPT section in its handoff shape; the verifier's ROLE/VERDICT
+grow the scaffold contract (fill only `pass`/`evidence`/`next_recommendation`,
+never invent a criterion, reproduce the score itself, an uncheckable rubric is
+`pass` false with `UNVERIFIED`) plus a RUBRICS section in its report shape.
+`workflows.py`: STATE_SCHEMA now shows the whole document, STATE_RULES names who
+owns every key, and the three templates grow `{campaign}` plus one role-specific
+block each — `_campaign_block`, `_experiment_block`, `_scaffold_block`,
+`_idea_contract_block`, all four rendering to `""` when the list has no `task`, so
+the plain pipeline's prompts are unchanged in substance. 12 tests in
+`tests/test_workflows.py`; the render tests in `test_roles.py` now run over all
+five agent files rather than the two new ones.
+
+One existing test needed a fix, and the fix is worth recording: the explorer's
+dispatch embeds the verifier's report verbatim, and the stub echoes its prompt,
+so an echo nested in an echo nested in a third outgrew the stub's 4000-char echo
+limit and pushed "Decide what happens next" past the truncation. The verifier now
+has a scripted reply in that test. Nothing was asserted about its wording, the
+worker still echoes so the list it was handed is visible, and the assertion the
+test exists for is intact.
+
+**4.1** ✅ ✅ `explorer_agent.py`: the `FINDINGS` section becomes an idea contract —
 title, falsifiable hypothesis, ordered plan, `target_rubrics` with at least one
 `metric` and one `implementation` rubric, stable snake_case ids. Read-only in the
 repo apart from the state file. No execution during ideation: no Bash, no Python,
 no pip, no probes. Keep the `be16d27` framing (goal first, not an auditor).
 *Verified by:* render assertions; the old prose-only shape is gone from the file.
 
-**4.2** `worker_agent.py`: append-only `program_<idx>`, never overwrite an older
+**4.2** ✅ `worker_agent.py`: append-only `program_<idx>`, never overwrite an older
 one; run the task's evaluator and nothing else; write `metrics`, `correct` and
 rubric evidence as an `attempt`. No exploratory execution outside the official
 evaluation.
 *Verified by:* render assertions; the dispatch prompt in `workflows.py` names the
 evaluator and the next free `program_<idx>`.
 
-**4.3** `verifier_agent.py`: it checks the rubrics the explorer wrote, from the
+**4.3** ✅ `verifier_agent.py`: it checks the rubrics the explorer wrote, from the
 host's scaffold, and fills only `pass`, `evidence`, `next_recommendation`. It
 does not invent criteria, does not add items, does not edit.
 *Verified by:* render assertions; a wire test shows the scaffold in its dispatch.
 
-**4.4** `workflows.py` prompt templates: `EXPLORER_PROMPT` grows the idea
+**4.4** ✅ `workflows.py` prompt templates: `EXPLORER_PROMPT` grows the idea
 contract and the schema; `WORKER_PROMPT` grows the evaluator, the program index
 and the attempt record; `VERIFIER_PROMPT` grows the scaffold. `STATE_SCHEMA` and
 `STATE_RULES` updated to match the extended document.
-*Verified by:* the existing three pipeline tests still pass unchanged in intent;
-`.format()` on each template with a realistic state does not raise `KeyError`.
+*Verified by:* the existing three pipeline tests still pass unchanged in intent
+(one needed a scripted verifier reply — see the phase note); `.format()` on each
+template with a realistic campaign state raises no `KeyError` and carries the
+campaign half, and with a task-less state carries none of it. Plus the test that
+pays for itself: `test_the_schema_is_the_document_key_for_key` parses
+`STATE_SCHEMA` as JSON and compares its keys, in order, against `Todo().to_dict()`,
+`Item.to_dict()`, `Idea.to_dict()` and `Conclusions.to_dict()`, and
+`test_the_schema_omits_exactly_the_keys_an_agent_may_not_write` asserts the
+attempt example is `Attempt.to_dict()` minus `overall_pass`. A schema that drifts
+from the loader teaches agents a shape the file rejects, and it fails silently —
+the write does not parse and the round is thrown away.
 
-**4.5** Commit.
+**4.5** ✅ Commit.
 
 ## Phase 5 — the `scientist` workflow
 
