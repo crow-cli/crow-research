@@ -182,10 +182,39 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       `test_ctrl_c_in_the_client_is_session_cancel`, mutation-checked: reverting
       the tuple gives rc -2 and a red test.
 
-- [ ] **A real run.** One end-to-end campaign on local `glm-5.3-flash` against
+- [x] **A real run.** One end-to-end campaign on local `glm-5.3-flash` against
       `examples/tasks/circpack/`, ended by hand with `session/cancel`, evidence
       recorded: rounds, ideas, attempts, scores, whether the rubric gate held.
       *Verified by:* the state file afterwards, and the run log quoted in README.
+      **Done — run 9**, `/tmp/campaign1`, two sessions totalling 5h48m, ended by
+      one SIGINT that became `session/cancel` (`rc 0`, `stop_reason: cancelled`,
+      4.0 s). The state file afterwards: `task` drafted by the drafter with
+      `task.md`'s three rubrics verbatim; one attempt, `program_1/src/program.py`,
+      `combined_score` **2.6359830795664423** against the baseline's
+      2.166666666666666, `correct` true, `overall_pass` true, `stop_reason`
+      `rubric_pass`; one idea, `record-beating refinement`, three rubrics (one
+      metric, two implementation), `added_by: explorer`; three items (1 `done`
+      from the prompt, 2 and 3 `open` from the explorer); `verdict: PASS` with a
+      99-word note; `conclusions` at trigger `new_category`, 149 words, one
+      paragraph; and `best` = `program_1/src/program.py` @ 2.6359830795664423,
+      set by the host and announced as `best (none) -> program_1/...` after the
+      verifier's reload — never by an agent. The rubric gate held: `best` moved
+      once, and `recompute_best()` still returned `None` on the worker's
+      unverified record. README's run table has it as run 9, and the circpack
+      subsection now says where the evidence actually landed
+      (`--results-dir program_1`, and `/tmp/verify1`/`/tmp/verify2` for the
+      verifier's reproductions) instead of the `results/` directory it guessed at.
+      **The run found a bug in the contract**: the worker recorded its attempt
+      with `idea_id: null`, because round 1 has no idea — the explorer writes
+      `ideas` *after* the worker runs — and `Attempt.idea_id` was typed `int`, so
+      the host refused the write and rolled the file back. Fixed in `b781094`
+      (`idea_id` optional, an idealess attempt graded on the task's own rubrics
+      through the new `Todo._expected_rubric_ids`, and `EXPERIMENT`/`SCAFFOLD`/
+      `STATE_RULES` saying so); 8 new tests, 176 passing, all 8 mutations of the
+      fix red. The worker's record survived only because it had committed it, so
+      the resume was `git show ef106ee:.crow-research/todo.json` — and the loop
+      picked up at `round 1 · Verifier` with no drafter and no worker, which is
+      the documented resume path exercised on a real campaign for the first time.
 
 ## Out of scope, parked
 

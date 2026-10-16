@@ -367,7 +367,7 @@ own list, which wins. An explicit empty list means "no tools".
 
 ```sh
 uv sync
-uv run pytest -q        # 168 tests; 19 of them end-to-end over the real wire, no model
+uv run pytest -q        # 176 tests; 19 of them end-to-end over the real wire, no model
 ```
 
 The client is `repl_client.py`, a v2 port of crow's
@@ -433,11 +433,16 @@ verbatim, and the drafter turns it into the `task`.
 
 Ctrl-C ends it, and nothing else does. What is left in `/tmp/circpack-run` is the
 whole record: `.crow-research/todo.json` with the task, the ideas, the attempts
-and the incumbent; `program_<idx>/src/program.py` per candidate, append-only; a
-`results/` directory per evaluation with the `metrics.json` and `correct.json`
-the numbers came from; and a git history the worker committed as it went. A
-second run against the same directory resumes rather than restarts — the drafter
-is not dispatched again, because the file already has a `task`.
+and the incumbent; `program_<idx>/src/program.py` per candidate, append-only; the
+`metrics.json` and `correct.json` the numbers came from, wherever the evaluator
+was pointed — run 9's worker chose `--results-dir program_1`, so each candidate
+carries its own evidence next to its source, and its verifier reproduced them
+into `/tmp/verify1` and `/tmp/verify2` outside the campaign entirely; and a git
+history the worker committed as it went. A second run against the same directory
+resumes rather than restarts — the drafter is not dispatched again, because the
+file already has a `task`, and neither is the worker when nothing is pending, so
+a run cancelled between the worker's write and the verifier's verdict picks up at
+the verifier.
 
 The generic CLI reaches the same workflow, one `--role` per agent, and says so
 when you leave one out:
@@ -623,7 +628,7 @@ render "who is speaking" without a protocol change — and a client that ignores
 
 ## What is tested
 
-168 tests. 19 of them run the real thing over the real wire — the orchestrator
+176 tests. 19 of them run the real thing over the real wire — the orchestrator
 spawned as a child or served on a socket, stub agents spawned by it in turn, no
 model anywhere — in `tests/test_orchestrator.py`, `tests/test_pipeline.py`,
 `tests/test_http.py`, `tests/test_scientist.py` and three handshake tests in
@@ -681,12 +686,12 @@ contract — the agents writing, the orchestrator reading back — and not a stu
 idea of it. Only `items` is merged per id; every other key overwrites, which is
 how a stub gets to write a document the host must refuse.
 
-The rest are units. `tests/test_campaign.py` (54) is the campaign document: what a
+The rest are units. `tests/test_campaign.py` (61) is the campaign document: what a
 rubric, an idea, an attempt, a `best` or a `conclusions` paragraph has to get
 wrong to be refused, and what the host computes regardless of what an agent
 asserted. `tests/test_todo.py` (44) is the list, the document and the file —
 written by the pipeline's own worker on run 1 and extended by it on runs 2, 3 and
-4. `tests/test_workflows.py` (12) is the prompts: every template formats against a
+4. `tests/test_workflows.py` (13) is the prompts: every template formats against a
 realistic campaign and against no campaign at all, the four campaign blocks are
 empty exactly when there is no `task`, `STATE_SCHEMA` is the document key for key
 and omits exactly the keys an agent may not write, and `STATE_RULES` names every
@@ -703,10 +708,12 @@ drafter or the writer unconditional, and the suite goes red.
 
 ## What it has actually done
 
-Eight runs against real models, each ended by `session/cancel` and by nothing
-else. The first four ran on the prose protocol; runs 5 to 8 on the state file, and
-6 to 8 are all resumptions of the same file — the loop picked up where the cancel
-landed, three times running:
+Nine runs against real models, each ended by `session/cancel` and by nothing else.
+The first four ran on the prose protocol; runs 5 to 9 on the state file, and 6 to 9
+are all resumptions of the same file — the loop picked up where the cancel landed,
+four times running. Runs 1 to 8 were this repo improving itself; run 9 is the first
+campaign against a task that was already a benchmark, and it is the one that found
+a bug in the contract:
 
 | run | model | observed |
 |---|---|---|
@@ -718,6 +725,7 @@ landed, three times running:
 | 6 | `glm-5.3-flash` | The resume path, live. The file had the work done and no verdict on it, so the run went straight to `round 1 · Verifier` — no seeding notice and no worker turn saying "nothing to do". The verifier reproduced every claim at `ff29d87`: validation ordering, case forgiven and invention refused, non-strings, the item left untouched by a refused `set`, exactly three new tests, 41 → 44 in that file. Then it caught a discrepancy and *resolved* it instead of failing the round — the tree printed `50 passed` against a claimed `49`, and `git grep -c "def test_"` per revision showed 46 at the parent and 49 at the commit, the fiftieth being a later commit's pipeline test. `verdict: PASS`, with that arithmetic spelled out in `verdict_note`. Cancelled 45 minutes into the explorer's turn. |
 | 7 | `glm-5.3-flash` | Resumed again, straight to `round 1 · Explorer`, cancelled 45 minutes later still researching: `memory/sql` over this repo's own history, then `web/search` and `web/fetch` across task-master's `tasks.json`, `AGENTS.md` conventions and long-running-agent harnesses. It wrote nothing, so the file was untouched and the next run picked up in exactly the same place. That is the resume contract holding, and it is also what "nothing is on a clock" costs: an explorer researches until somebody stops it, and stopping it is `session/cancel`. |
 | 8 | `glm-5.3-flash` | 90m03s, `rc 0`, `stop_reason: cancelled`. Resumed → `round 1 · Explorer` (35m40s) → `Explorer added 3 items`, ids 2/3/4 hand-computed one past the highest in the file and stamped `added_by: explorer`. Then `round 2 · Worker — 3 pending · last verdict PASS`, whose first act was `fs/read` on the state file. Seed → worker → verifier PASS → explorer appends → round 2's worker, on a real model, across four processes and three resumptions: the loop closed end to end. The worker never claimed an item. Two of its eight turns ran 20 and 24 minutes emitting 58k and 63k characters of chain-of-thought — `glm-5.3-flash` is a 2-bit-quantized thinking model with no `max_tokens` cap, so a rambling turn runs until the server's slot does. The contract held throughout: the file parsed, the cancel reached a child mid-generation, and `ps` was clean afterwards. |
+| 9 | `glm-5.3-flash` | The first campaign against circpack, in `/tmp/campaign1`: two sessions totalling 5h48m, ended by one SIGINT that became `session/cancel` — `rc 0`, `cancelling...`, `stop_reason: cancelled`, 4.0 s later. Drafter (24m, `9cb8553`) ran the evaluator on the baseline twice for byte-identity, threw three bad candidates at it, and wrote `task` with `task.md`'s three rubrics verbatim, leaving every other key alone. Worker (3h14m, `ef106ee`) identified the benchmark as AlphaEvolve problem 13, built a 17-start penalized annealer with an exact-grow polish and a dense-simplex LP referee in `.crow-research/dev/pack_dev.py`, froze it to `program_1/src/program.py` (21,298 bytes, 619 lines, `math` its only import), scored it with `--results-dir program_1` → **2.6359830795664423** against the baseline's 2.166666666666666, byte-identical across two runs, deleted its scratch, and recorded the attempt with `idea_id: null`. **The host refused that write** — `an attempt's idea_id is an integer, got None` — and round 1 never has an idea, because the explorer writes `ideas` *after* the worker runs, so the contract guaranteed the first attempt would always be discarded and `best` could never move. The rollback and the notice worked exactly as designed and the record survived only because the worker had committed it; `b781094` makes `idea_id` optional, grades an idealess attempt on the task's own rubrics, and says so in three prompts (8 tests, 8 mutations red). Resuming was then `git show ef106ee:.crow-research/todo.json`: the worker's own record, accepted by the fixed loader, `repair_scaffolds()` finding nothing to repair and `recompute_best()` still `None` because nothing had been verified yet — and the run went straight to `round 1 · Verifier`, no drafter and no worker. Verifier (54m) reproduced the score into `/tmp/verify1` and `/tmp/verify2` (72.4 s and 72.1 s, sha256-compared against the recorded `metrics.json`), reproduced the baseline, scanned the candidate for grader detection and prohibited I/O, and confirmed the warm start's provenance by fetching minmaxarena's data file — all 78 transcribed numbers match digit for digit. It corrupted the state file's JSON three times with a stray newline inside a string, caught it from its own diff each time and repaired it before the host ever reloaded, so the host never saw a document that did not parse. It wrote `verdict: PASS` with a 99-word note, filled all three rubrics with commands and hashes, and left `best` alone; the host then announced `best (none) -> program_1/src/program.py (2.6359830795664423)` and `overall_pass` flipped in the same reload, computed rather than read. Explorer (46m) scoped the published-record ecosystem, added idea 1 `record-beating refinement` with three rubrics (`score_beats_record` metric, `lp_in_loop` and `deterministic_output` implementation) and items 2 and 3, rejected two leads it had already checked itself rather than delegating them, and wrote the first `conclusions` — trigger `new_category`, 149 words, one paragraph. `round 2 · Worker — 2 pending · last verdict PASS` was 9.5 minutes old at the cancel. What the model got wrong: the worker had a candidate beating the baseline from about the 2h35m mark (its own generated seeds peak near 2.42) and kept improving a scratch optimizer instead of filing it, and the score it did file comes from a warm start transcribed off the web rather than from its search — disclosed in the module docstring, the attempt note and its report, then confirmed by the verifier. The gate held throughout: `best` moved once, by the host, after the verifier's write. |
 
 ## Next
 

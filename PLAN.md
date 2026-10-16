@@ -252,7 +252,7 @@ the write does not parse and the round is thrown away.
 
 **4.5** ✅ Commit.
 
-## Phase 5 — the `scientist` workflow  ✅ DONE (2026-10-15, 167 passed)
+## Phase 5 — the `scientist` workflow  ✅ DONE (2026-10-15, 158 passed)
 
 Evidence: `pipeline`'s body moved wholesale into a private
 `_loop(worker, verifier, explorer, todo, *, max_review, announce, state_path,
@@ -463,16 +463,101 @@ and a red test. 168 passed.
 
 **8.2** ✅ Commit.
 
-## Phase 9 — a real run
+## Phase 9 — a real run  ✅ DONE (2026-10-16, 176 passed)
 
-**9.1** Start a campaign on local `glm-5.3-flash` against
+**9.1** ✅ Start a campaign on local `glm-5.3-flash` against
 `examples/tasks/circpack/` through `repl_client.py`, in a scratch cwd outside the
 repo. Let it run. End it by hand with `session/cancel` — nothing else ends it.
-*Verified by:* the state file afterwards: `task` drafted, at least one idea with
-rubrics, at least one attempt with metrics, `best` set only by the gate.
 
-**9.2** Write the evidence into README's run table: rounds, ideas, attempts,
+Run 9, in `/tmp/campaign1` (circpack copied in, git init'd, `__pycache__`
+ignored). Two sessions, 5h48m of model time in total: the first ended at 234.8
+minutes, the second at 112.8. One SIGINT to the client, `rc 0`, `cancelling...`
+then `stop_reason: cancelled`, 4.0 seconds from signal to exit — the Phase 8 fix,
+in the wild, on a real campaign. (The first session was spawned before that fix
+landed and so ended `rc -2` with a traceback and no cancel sent; the pre-fix code
+was still in its memory. Same bug, observed twice, once fixed.)
+
+The state file afterwards, every clause of the criterion:
+
+* `task` drafted — the drafter's turn, 24 minutes, commit `9cb8553`. It ran the
+  evaluator on the baseline twice and byte-diffed the results, threw three bad
+  candidates at it, and wrote `task.md`'s three rubrics verbatim
+  (`exposes_solution` implementation, `correct_packing` metric,
+  `beats_program_0` metric), `evaluator: circpack/evaluate.py`,
+  `program0: circpack/program_0/src/program.py`. It left `items`, `ideas`,
+  `attempts`, `best` and `conclusions` alone.
+* at least one attempt with metrics — attempt 1, `idea_id` null,
+  `program_1/src/program.py`, `combined_score` **2.6359830795664423** against the
+  baseline's 2.166666666666666, `correct` true, `stop_reason` `rubric_pass`, and
+  all three rubrics passed with commands and a sha256 in the evidence.
+* at least one idea with rubrics — idea 1, `record-beating refinement`,
+  `added_by: explorer`, three rubrics: `score_beats_record` (metric),
+  `lp_in_loop` and `deterministic_output` (implementation), so
+  `_rubrics(require_both=True)` is satisfied by an idea a model wrote unprompted.
+  Plus items 2 and 3, `open`, `added_by: explorer`, and a first `conclusions`
+  paragraph at trigger `new_category`, 149 words, one paragraph.
+* `best` set only by the gate — the host announced
+  `best (none) -> program_1/src/program.py (2.6359830795664423) — the gate is the
+  host's: every rubric passed, the candidate is correct, and it strictly beats
+  the incumbent` on the reload *after* the verifier's turn. Neither the worker
+  nor the verifier wrote it, and `recompute_best()` on the worker's unverified
+  record returned `None`, because `overall_pass` was still false.
+
+**The run found a bug in the contract, and the contract's own recovery is what
+made it survivable.** The worker recorded its attempt with `"idea_id": null` —
+correct, since round 1 has no idea, the explorer writing `ideas` only after the
+worker has run — and the host refused the document:
+`todo.json does not parse — an attempt's idea_id is an integer, got None — the
+last good copy is back in place; that agent's write is lost`. `Attempt.idea_id`
+was typed `int` and `_validate` said "an attempt without an idea is evidence for
+nothing", so the loop's own ordering guaranteed the first attempt would always be
+discarded and `best` could never move. Fixed in `b781094`: `idea_id` is
+`Optional[int]`; `_validate` skips the membership check for null and rewords the
+message for a *named* idea that was never proposed; the new
+`Todo._expected_rubric_ids` grades an idealess attempt on the task's own rubrics,
+so `repair_scaffolds` still polices it against the drafter's contract instead of
+waving it through; `record_attempt(None, …)` scaffolds from `task.rubrics`;
+`render_campaign` prints `idea none`; and `EXPERIMENT`, `SCAFFOLD` and
+`STATE_RULES` all say so, because a prompt that only shows the idea case is how a
+worker's first record gets refused on load. 8 new tests, 176 passing, and all 8
+mutations of the fix go red.
+
+Because the worker had committed its record as `ef106ee`, the resume was
+`git show ef106ee:.crow-research/todo.json` — the sidecar git doing exactly what
+it was taken on for. The fixed loader accepted the worker's own write unchanged,
+`repair_scaffolds()` found nothing to repair, and the run went straight to
+`round 1 · Verifier`: no drafter, because the file has a `task`, and no worker,
+because nothing is pending. That is the documented resume path, exercised on a
+real campaign for the first time.
+
+**9.2** ✅ Write the evidence into README's run table: rounds, ideas, attempts,
 scores, whether the rubric gate held, what the model got wrong.
-*Verified by:* the numbers in the table match the state file and the run log.
 
-**9.3** Commit, then `goal_done`.
+Run 9 is a row in the table, and the intro now says nine runs with 6 to 9 all
+resumptions of the same file. Every number in it was read back out of
+`/tmp/campaign1/.crow-research/todo.json`, the two run logs, or the scratch git
+history after the cancel: the score, the baseline, the 21,298-byte 619-line
+candidate whose only import is `math` (checked directly, not taken from the
+verifier's word), the 99-word `verdict_note`, the 149-word `conclusions`, the
+three rubric ids and their types, the commit hashes, and the per-role timings
+taken from the poll log's elapsed stamps. What the model got wrong is in the row
+too: the worker had a candidate beating the baseline from about the 2h35m mark —
+its own generated seeds peak near 2.42 — and kept improving a scratch optimizer
+at `.crow-research/dev/pack_dev.py` instead of filing it, and the score it
+finally filed comes from a warm start transcribed off the web rather than from
+its search, which it disclosed in the module docstring, the attempt note and its
+report, and which the verifier then confirmed digit for digit against
+minmaxarena's published data. The circpack subsection's guess at "a `results/`
+directory per evaluation" is replaced with what happened: the worker scored into
+`--results-dir program_1`, so each candidate carries its own evidence beside its
+source, and the verifier reproduced into `/tmp/verify1` and `/tmp/verify2`
+outside the campaign entirely. Test counts moved 168 → 176, `test_campaign` 54 →
+61, `test_workflows` 12 → 13, all re-measured with `--collect-only`.
+
+One more thing worth keeping: the verifier corrupted the state file's JSON three
+times with a stray newline inside a string value, caught it from its own `edit`
+diff each time, and repaired it before the host ever reloaded — so the host never
+saw a document that did not parse, and the notice path that run 9's first session
+exercised stayed exercised only once.
+
+**9.3** ✅ Commit, then `goal_done`.
