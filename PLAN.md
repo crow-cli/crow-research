@@ -134,32 +134,57 @@ read-only reference, scores above zero.
 
 **2.4** ✅ Commit.
 
-## Phase 3 — the two new roles
+## Phase 3 — the two new roles  ✅ DONE (2026-10-15, 127 passed)
 
-**3.1** `roles.py`: `DRAFTER` and `WRITER` in `BUILTIN`, each with a `brief` in
+Evidence: `DRAFTER`/`WRITER` in `roles.py` and `BUILTIN` (and exported from
+`crow_research`), `agents/drafter_agent.py` (patches ROLE,
+PROBLEM_SOLVING_WORKFLOW, FILE_SYSTEM_GUIDELINES, CODE_QUALITY; adds TASK_SPEC),
+`agents/writer_agent.py` (patches ROLE, PROBLEM_SOLVING_WORKFLOW,
+FILE_SYSTEM_GUIDELINES, SEARCH; adds GROUNDED), default ports 2783/2784. 16 tests
+in `tests/test_roles.py`. The render assertions are *derived* from each agent file
+rather than hardcoded against it — which sections it patches, what it calls them,
+how many — so they also catch the failure nothing else would: a section written
+into the file and never wired into `role_prompt()`. Confirmed by mutation:
+deleting `"SEARCH": SEARCH` from the writer's patches fails
+`test_the_agent_file_renders_crows_prompt_edited[writer]` with "SEARCH landed in
+[]". Char counts are relational (`len(rendered) > len(base)`, section count
+`base + 1`, every untouched section byte-identical) because a hardcoded count is
+a false red the first time crow's prompt changes upstream — and inheriting that
+change is the whole reason `role_prompt` patches a template instead of freezing a
+copy.
+
+**3.1** ✅ ✅ `roles.py`: `DRAFTER` and `WRITER` in `BUILTIN`, each with a `brief` in
 the same voice as the existing four. `RESEARCHER` stays file-less and parked.
 *Verified by:* `resolve("drafter")` and `resolve("writer")` work, and
 `resolve("writer=ws://…")` still parses an endpoint.
 
-**3.2** `agents/drafter_agent.py` — turns a research brief into a task spec:
+**3.2** ✅ `agents/drafter_agent.py` — turns a research brief into a task spec:
 goal, rubrics, evaluator, `program_0`. Writes `task` into the state file. It may
 write the evaluator and the baseline, because without them there is nothing to
 score; it does not run experiments.
 *Verified by:* the file's `system_prompt` factory renders against a real
-`Config.load()` — assert the section count, the char count, `crow_role ==
-"drafter"`, and that every patched section name exists in crow's prompt.
+`Config.load()` — `crow_role == "drafter"`, section count `base + 1`, the render
+strictly longer than crow's own, every patched section name present in crow's
+prompt, every section it did not patch byte-identical, the added section
+immediately after `</IMPORTANT>`, and the remaining `template_args` (workspace,
+session lookup, skills) inherited untouched.
 
-**3.3** `agents/writer_agent.py` — turns the evidence into a grounded report:
+**3.3** ✅ `agents/writer_agent.py` — turns the evidence into a grounded report:
 every quantitative claim resolves to an `attempt` or a `metrics.json`, and the
 claim-to-source map is part of the output. Read-only on the code.
 *Verified by:* same render assertions as 3.2.
 
-**3.4** Both files: `--http/--host/--port/--model/--config-dir/--config-file/--debug`,
-stdio by default, distinct default ports that do not collide with 2771/2772/2782.
-*Verified by:* `--help` on both; a spawn-and-handshake check like
-`test_the_agent_file_serves_http`.
+**3.4** ✅ Both files: `--http/--host/--port/--model/--config-dir/--config-file/--debug`,
+stdio by default, distinct default ports that do not collide with 2771/2772/2782
+(drafter 2783, writer 2784; worker 2780 and verifier 2781 were taken too).
+*Verified by:* `--help` on both, asserting every flag is offered; a
+spawn-and-handshake `test_the_agent_file_serves_http` per role — bind, dial over
+WebSocket, `session/new`, SIGTERM, and assert the process actually exited; and
+`test_no_two_agent_files_share_a_default_port`, which AST-reads the `--port`
+default out of every file in `agents/` (resolving `DEFAULT_PORT` as well as a
+literal) and fails on any collision with another agent or with `crow-cli acp2`.
 
-**3.5** Commit.
+**3.5** ✅ Commit.
 
 ## Phase 4 — the three existing contracts grow
 

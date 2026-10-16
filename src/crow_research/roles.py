@@ -33,7 +33,7 @@ DEFAULT_HANDOFF = (
     "{brief}"
 )
 
-#: The default cast. All four start out as the same plain crow agent — a role
+#: The default cast. All six start out as the same plain crow agent — a role
 #: with no agent file of its own is still a working agent, it just has nobody's
 #: edited prompt behind it — and any of them can be pointed at a real one with
 #: ``--role name=endpoint``, which is what ``agents/orchestrator_agent.py`` does.
@@ -88,6 +88,22 @@ EXPLORER = Role(
         "the user asked for, and what this package needs next to deliver it."
     ),
 )
+DRAFTER = Role(
+    name="drafter",
+    title="Drafter",
+    brief=(
+        "You are the first agent in the campaign and there is no report above — the text below is the brief. "
+        "Nothing gets measured until the task exists, so what you write is what every later round is graded by."
+    ),
+)
+WRITER = Role(
+    name="writer",
+    title="Writer",
+    brief=(
+        "The reports above are the campaign talking about itself. Your job is the record: what it actually "
+        "achieved, with every number sourced to the file that shows it."
+    ),
+)
 #: No agent file yet — cast it against an endpoint of your own
 #: (``--role researcher="crow-cli acp2"``) or write ``agents/researcher_agent.py``.
 RESEARCHER = Role(
@@ -99,7 +115,7 @@ RESEARCHER = Role(
     ),
 )
 
-BUILTIN: dict[str, Role] = {r.name: r for r in (WORKER, VERIFIER, EXPLORER, RESEARCHER)}
+BUILTIN: dict[str, Role] = {r.name: r for r in (WORKER, VERIFIER, EXPLORER, DRAFTER, WRITER, RESEARCHER)}
 
 
 def resolve(spec: str, *, cwd: Optional[str] = None) -> Role:

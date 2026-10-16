@@ -25,7 +25,7 @@ agent — spawned or already served on a socket — works exactly as well.
 
 from .agent import OrchestratorAgent, Session, Workflow, serve_http, serve_stdio
 from .peer import Peer, PeerClient, PeerExited, TurnResult
-from .roles import BUILTIN, EXPLORER, RESEARCHER, VERIFIER, WORKER, Role, resolve
+from .roles import BUILTIN, DRAFTER, EXPLORER, RESEARCHER, VERIFIER, WORKER, WRITER, Role, resolve
 from .todo import Item, Todo, state_path
 from .transport import Endpoint, Http, Stdio, Ws, open_endpoint, parse_endpoint
 from .turn import META_AGENT, Turn, TurnCancelled
@@ -34,6 +34,7 @@ from .workflows import COMPACT_PROMPT, chain, forever, pipeline, rounds, select,
 __all__ = [
     "BUILTIN",
     "COMPACT_PROMPT",
+    "DRAFTER",
     "EXPLORER",
     "Endpoint",
     "Http",
@@ -53,6 +54,7 @@ __all__ = [
     "TurnResult",
     "VERIFIER",
     "WORKER",
+    "WRITER",
     "Workflow",
     "Ws",
     "chain",

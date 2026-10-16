@@ -57,7 +57,9 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       of a bad rubric type / a non-snake_case id / an attempt with no idea;
       `uv run pytest -q` green.
 
-- [ ] **Roles: `drafter` and `writer`.** Two new `Role`s in `roles.py`, two new
+- [x] **Roles: `drafter` and `writer`.** (16 tests in `tests/test_roles.py`, 127
+      passed — ports 2783/2784; the render assertions are derived from each agent
+      file, so an unwired section fails the build, confirmed by mutation) Two new `Role`s in `roles.py`, two new
       agent files, each one file a client spawns, each crow's system prompt with
       sections patched — never a fresh prompt. No other new roles.
       *Verified by:* both files render a `SystemPromptFactory` that patches real
