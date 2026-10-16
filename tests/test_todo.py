@@ -321,11 +321,16 @@ def test_to_dict_is_the_document() -> None:
     todo.set(1, DONE, "built it")
     todo.verdict, todo.verdict_note = "PASS", "every claim reproduced"
     assert todo.to_dict() == {
+        "task": None,
         "verdict": "PASS",
         "verdict_note": "every claim reproduced",
         "items": [
             {"id": 1, "text": "make the thing", "state": DONE, "note": "built it", "added_by": "prompt"}
         ],
+        "ideas": [],
+        "attempts": [],
+        "best": None,
+        "conclusions": {"text": "", "trigger": "none", "reason": ""},
     }
 
 
@@ -473,7 +478,7 @@ def test_save_writes_indented_json_an_agent_can_patch() -> None:
         path = state_path(tmp)
         todo.save(path)
         text = path.read_text()
-        assert text.startswith('{\n  "verdict": null,')
+        assert text.startswith('{\n  "task": null,\n  "verdict": null,')
         assert '"text": "a thing"' in text
         assert text.endswith("}\n")
 

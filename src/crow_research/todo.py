@@ -29,9 +29,21 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Optional
+
+from .campaign import (
+    NONE,
+    Attempt,
+    Best,
+    Conclusions,
+    Idea,
+    Rubric,
+    RubricStatus,
+    TaskSpec,
+)
 
 #: An item's life. ``open`` -> ``working`` -> ``done`` (verified) or back to
 #: ``open`` (the verifier found a hole). ``blocked`` is a dead end a human or an
@@ -53,6 +65,19 @@ STATE_FILE = ".crow-research/todo.json"
 def state_path(cwd: str | Path) -> Path:
     """The state file for one working directory."""
     return Path(cwd) / STATE_FILE
+
+
+def _each(raw: Any, key: str, parse) -> list:
+    """Parse a list-valued key of the document, or reject it naming the key.
+
+    Absent reads as empty: every campaign key is optional, so a file written
+    before the campaign existed still loads and still means what it said.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError(f"'{key}' is a list, got {type(raw).__name__}")
+    return [parse(entry) for entry in raw]
 
 
 @dataclass
@@ -109,21 +134,44 @@ class Item:
 
 @dataclass
 class Todo:
-    """The shared list. Small on purpose: add, claim, settle, render, save.
+    """The shared list, and the campaign record hanging off it.
 
     ``verdict`` and ``verdict_note`` are the verifier's sign-off. They live on
     the list rather than in a report because the loop's exit condition reads
     them: "the verifier signed off AND the todo list is complete" is one
     expression over this object.
+
+    ``task``, ``ideas``, ``attempts``, ``best`` and ``conclusions`` are the
+    scientific campaign — see :mod:`crow_research.campaign` for what each one is
+    and who owns it. They are optional and default to empty, so a file written
+    before the campaign existed still loads: the list came first and a campaign
+    is a list plus evidence, not a different document.
     """
 
     items: list[Item] = field(default_factory=list)
     verdict: Optional[str] = None
     verdict_note: str = ""
+    #: The executable task specification, or ``None`` until the drafter writes one.
+    task: Optional[TaskSpec] = None
+    #: Ideas the explorer proposed, in the order it proposed them.
+    ideas: list[Idea] = field(default_factory=list)
+    #: Attempts the worker ran against them, in the order they were recorded.
+    attempts: list[Attempt] = field(default_factory=list)
+    #: The best *correct* program so far. Host-owned: :meth:`record_attempt` is
+    #: the only thing that moves it.
+    best: Optional[Best] = None
+    #: The distilled paragraph the next round starts from.
+    conclusions: Conclusions = field(default_factory=Conclusions)
     #: Where the next id comes from. Not part of the repr and not part of
     #: equality: two lists holding the same items are the same list, whatever
     #: their counters have been through.
     _ids: Iterator[int] = field(
+        default_factory=lambda: itertools.count(1), repr=False, compare=False
+    )
+    _idea_ids: Iterator[int] = field(
+        default_factory=lambda: itertools.count(1), repr=False, compare=False
+    )
+    _attempt_ids: Iterator[int] = field(
         default_factory=lambda: itertools.count(1), repr=False, compare=False
     )
 
@@ -217,6 +265,138 @@ class Todo:
     def __len__(self) -> int:
         return len(self.items)
 
+    # -- the campaign ---------------------------------------------------
+    #
+    # Everything below this line is host-owned. The agents write the file with
+    # the same ``edit`` tool they use on source, and ``from_dict`` is what checks
+    # what they wrote; these methods are what the orchestrator does with it
+    # afterwards — assigning ids, scaffolding the fields an agent is allowed to
+    # fill, and computing the aggregates nobody is allowed to assert.
+
+    def add_idea(self, title: str, hypothesis: str, plan, rubrics, *,
+                 notes: str = "", by: str = "") -> Idea:
+        """Record one idea. The host assigns the id, the explorer supplies the rest.
+
+        Validated by construction: building the :class:`Idea` and reading it back
+        through ``from_dict`` is the same check the file would apply on the next
+        load, so a bad bundle is refused here rather than poisoning the document.
+        """
+        idea = Idea.from_dict({
+            "id": next(self._idea_ids), "title": title, "hypothesis": hypothesis,
+            "plan": list(plan), "rubrics": [r.to_dict() if isinstance(r, Rubric) else r for r in rubrics],
+            "notes": notes, "added_by": by,
+        })
+        self.ideas.append(idea)
+        return idea
+
+    def idea(self, idea_id: int) -> Optional[Idea]:
+        return next((i for i in self.ideas if i.id == idea_id), None)
+
+    def latest_idea(self) -> Optional[Idea]:
+        """The idea the next attempt tests, or ``None`` before the first one."""
+        return self.ideas[-1] if self.ideas else None
+
+    def scaffold_rubrics(self, idea: Optional[Idea] = None) -> list[dict[str, Any]]:
+        """The rubric statuses an agent is allowed to fill: ``pass`` and ``evidence``.
+
+        Pre-created ``false`` with empty evidence, so a rubric nobody looked at
+        reads as unpassed rather than absent — and so the aggregate is the host's
+        to compute. This is the scaffold their harness writes into
+        ``rubric_status.json`` before the verification agent is even dispatched.
+        """
+        target = idea if idea is not None else self.latest_idea()
+        if target is None:
+            return []
+        return [{"id": r.id, "pass": False, "evidence": ""} for r in target.rubrics]
+
+    def next_program_index(self) -> int:
+        """The next free ``program_<idx>``. Candidates are append-only, so this
+        only ever counts up: an older program is evidence and is never overwritten."""
+        highest = 0
+        for attempt in self.attempts:
+            match = re.search(r"program_(\d+)", attempt.program)
+            if match:
+                highest = max(highest, int(match.group(1)))
+        return highest + 1
+
+    def record_attempt(self, idea_id: int, program: str, metrics: dict[str, Any],
+                       correct: bool, stop_reason: str, *, note: str = "") -> Attempt:
+        """Record one evaluation and apply the ``best`` gate.
+
+        Two independent gates, as in their §3.3: every rubric passing closes the
+        idea's contract, while moving ``best`` needs a *correct* candidate with a
+        *strictly* higher score. A rubric pass on a worse program is a finished
+        contract and no progress; a better score with a failing rubric is
+        progress the campaign is not allowed to bank.
+
+        Recording is therefore not the gate — it cannot be, because nothing has
+        been verified yet. The rubric statuses start as the scaffold, filling
+        them is the verifier's turn through :meth:`apply_rubric_status`, and that
+        is where ``best`` moves. The worker reports what the evaluator measured,
+        the verifier judges it, and the two writers never share a field.
+        """
+        idea = self.idea(idea_id)
+        if idea is None:
+            raise ValueError(f"attempt tests idea {idea_id}, which is not in 'ideas'")
+        attempt = Attempt.from_dict({
+            "id": next(self._attempt_ids), "idea_id": idea_id, "program": program,
+            "metrics": metrics, "correct": correct,
+            "rubrics": self.scaffold_rubrics(idea), "stop_reason": stop_reason, "note": note,
+        })
+        self.attempts.append(attempt)
+        return attempt
+
+    def apply_rubric_status(self, attempt_id: int, statuses, *,
+                            next_recommendation: str = "") -> Attempt:
+        """Take the verifier's judgment on one attempt's rubrics.
+
+        Only ``pass``, ``evidence`` and ``next_recommendation`` are read; ids come
+        from the scaffold, and ``overall_pass`` is computed rather than accepted.
+        A status for a rubric the idea never named is refused — an invented
+        criterion is how a verifier starts grading its own taste instead of the
+        contract.
+        """
+        attempt = next((a for a in self.attempts if a.id == attempt_id), None)
+        if attempt is None:
+            raise ValueError(f"no attempt {attempt_id}")
+        expected = {r.id for r in attempt.rubrics}
+        filled: dict[str, RubricStatus] = {}
+        for raw in statuses:
+            status = RubricStatus.from_dict(raw, where=f"attempt {attempt_id}'s rubric")
+            if status.id not in expected:
+                raise ValueError(
+                    f"attempt {attempt_id} was scored on rubric {status.id!r}, which the idea "
+                    f"never named — expected {'/'.join(sorted(expected)) or '(none)'}"
+                )
+            filled[status.id] = status
+        merged = tuple(filled.get(r.id, r) for r in attempt.rubrics)
+        index = self.attempts.index(attempt)
+        updated = Attempt(id=attempt.id, idea_id=attempt.idea_id, program=attempt.program,
+                          metrics=attempt.metrics, correct=attempt.correct, rubrics=merged,
+                          stop_reason=attempt.stop_reason, note=attempt.note,
+                          next_recommendation=next_recommendation.strip())
+        self.attempts[index] = updated
+        # The one place `best` moves: the rubrics have been judged, the candidate
+        # is correct, and it beats the incumbent. Strictly beats — a tie is not
+        # progress and does not earn the campaign a new reference program.
+        score = updated.score
+        if updated.overall_pass and updated.correct and score is not None \
+                and (self.best is None or score > self.best.score):
+            self.best = Best(program=updated.program, score=score, attempt_id=updated.id)
+        return updated
+
+    def set_conclusions(self, text: str, *, trigger: str, reason: str = "") -> Conclusions:
+        """Replace the distilled paragraph, under the gate.
+
+        ``trigger`` ``none`` means the round reconfirmed what was there, and the
+        text is left alone rather than rewritten — simple reconfirmation is not a
+        reason to touch a paragraph the next agent has to read.
+        """
+        if trigger == NONE:
+            return self.conclusions
+        self.conclusions = Conclusions.validate(Conclusions(text=text.strip(), trigger=trigger, reason=reason.strip()))
+        return self.conclusions
+
     # -- rendering ------------------------------------------------------
 
     def render(self, *, only_pending: bool = False) -> str:
@@ -228,14 +408,76 @@ class Todo:
         head = f"TODO ({len(self.pending())} pending / {len(self.items)} total)"
         return head + "\n" + "\n".join(i.render() for i in shown)
 
+    def render_campaign(self, *, attempts: int = 5) -> str:
+        """The campaign as the agents see it, in the same voice as :meth:`render`.
+
+        Kept separate from the list on purpose: ``render()`` is a wire format
+        three existing roles and forty-odd tests already read, and appending a
+        research digest to it would change what "the todo list" says. This is the
+        rest of the document — the goal, the incumbent, the idea under test, the
+        last few attempts and the distilled paragraph — and a dispatch prompt
+        includes it when the role needs evidence rather than just work.
+
+        ``attempts`` bounds how many of the most recent are shown. Not a cap on
+        anything the loop does: the file keeps every attempt, and an agent that
+        needs older ones reads the file.
+        """
+        out: list[str] = []
+        if self.task:
+            out.append(f"TASK GOAL\n{self.task.goal}")
+            out.append("TASK RUBRICS\n" + "\n".join(
+                f"- {r.id} ({r.type}): {r.description}" for r in self.task.rubrics))
+            out.append(f"EVALUATOR {self.task.evaluator}\nBASELINE {self.task.program0}")
+        if self.best:
+            out.append(f"BEST {self.best.program} — combined_score {self.best.score} "
+                       f"(attempt {self.best.attempt_id})")
+        elif self.task:
+            out.append("BEST (none yet — no correct candidate has been recorded)")
+        latest = self.latest_idea()
+        if latest:
+            out.append(
+                f"IDEA {latest.id} — {latest.title}\n"
+                f"hypothesis: {latest.hypothesis}\n"
+                + "\n".join(f"- {s}" for s in latest.plan)
+                + "\nrubrics to satisfy:\n"
+                + "\n".join(f"- {r.id} ({r.type}): {r.description}" for r in latest.rubrics)
+            )
+        shown = self.attempts[-attempts:] if attempts else []
+        if shown:
+            lines = []
+            for a in shown:
+                passed = sum(1 for r in a.rubrics if r.passed)
+                score = a.score
+                lines.append(
+                    f"- {a.program} (idea {a.idea_id}, attempt {a.id}): "
+                    f"combined_score {'n/a' if score is None else score}, "
+                    f"correct {str(a.correct).lower()}, rubrics {passed}/{len(a.rubrics)}, "
+                    f"stopped {a.stop_reason}"
+                    + (f" — {a.next_recommendation}" if a.next_recommendation else "")
+                )
+            out.append(f"ATTEMPTS (last {len(shown)} of {len(self.attempts)})\n" + "\n".join(lines))
+        if self.conclusions.text:
+            out.append(f"CONCLUSIONS ({self.conclusions.trigger})\n{self.conclusions.text}")
+        return "\n\n".join(out) if out else "(no campaign yet — there is no task specification)"
+
     # -- the file -------------------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:
-        """The document. Key order is the order the agents are shown it in."""
+        """The document. Key order is the order the agents are shown it in.
+
+        ``task`` first, because it is what every other key is in service of, and
+        ``best`` next to ``attempts``, because reading one without the other is
+        how a campaign loses track of whether it is improving.
+        """
         return {
+            "task": self.task.to_dict() if self.task else None,
             "verdict": self.verdict,
             "verdict_note": self.verdict_note,
             "items": [item.to_dict() for item in self.items],
+            "ideas": [idea.to_dict() for idea in self.ideas],
+            "attempts": [attempt.to_dict() for attempt in self.attempts],
+            "best": self.best.to_dict() if self.best else None,
+            "conclusions": self.conclusions.to_dict(),
         }
 
     @classmethod
@@ -266,11 +508,30 @@ class Todo:
         note = doc.get("verdict_note", "")
         if not isinstance(note, str):
             raise ValueError(f"verdict_note is a string, got {type(note).__name__}")
-        todo = cls(items=items, verdict=verdict, verdict_note=note.strip())
+
+        raw_task = doc.get("task")
+        task = TaskSpec.from_dict(raw_task) if raw_task is not None else None
+        ideas = _each(doc.get("ideas", []), "ideas", Idea.from_dict)
+        attempts = _each(doc.get("attempts", []), "attempts", Attempt.from_dict)
+        known = {idea.id for idea in ideas}
+        for attempt in attempts:
+            if attempt.idea_id not in known:
+                raise ValueError(
+                    f"attempt {attempt.id} tests idea {attempt.idea_id}, which is not in 'ideas' "
+                    f"— an attempt without an idea is evidence for nothing"
+                )
+        raw_best = doc.get("best")
+        best = Best.from_dict(raw_best) if raw_best is not None else None
+        conclusions = Conclusions.from_dict(doc.get("conclusions"))
+
+        todo = cls(items=items, verdict=verdict, verdict_note=note.strip(), task=task,
+                   ideas=ideas, attempts=attempts, best=best, conclusions=conclusions)
         # Ids are never reused, so a loaded list keeps counting past every id in
         # the file: the next ``add`` must not collide with an item some agent is
-        # still holding a reference to.
+        # still holding a reference to. Same for ideas and attempts.
         todo._ids = itertools.count(max(seen, default=0) + 1)
+        todo._idea_ids = itertools.count(max((i.id for i in ideas), default=0) + 1)
+        todo._attempt_ids = itertools.count(max((a.id for a in attempts), default=0) + 1)
         return todo
 
     @classmethod
