@@ -283,6 +283,85 @@ passed. What you decide goes into that file as new items:
 {rules}
 """
 
+#: The `task` key on its own, shown to the drafter. Substituted as a value like
+#: ``STATE_SCHEMA``, so its braces are its own.
+TASK_SCHEMA = """\
+"task": {
+  "goal": "one paragraph of prose",
+  "rubrics": [
+    {"id": "correct_packing", "type": "metric",
+     "description": "correct.json reports correct true — no overlap, nothing out of bounds"},
+    {"id": "exposes_solution", "type": "implementation",
+     "description": "the candidate defines solution() returning (centers, radii, total)"}
+  ],
+  "evaluator": "path/to/evaluate.py",
+  "program0": "path/to/program_0/src/program.py"
+}"""
+
+DRAFTER_PROMPT = """Nothing can be measured yet: the state file has no task specification.
+
+What the user asked for: {task}
+
+The state file is: {path}
+
+{todo}
+
+Write the task specification into that file's `task` key, and write the evaluator
+and the baseline program it names:
+
+```json
+{task_schema}
+```
+
+* The goal is prose, and it says what counts as success and what single number
+  expresses it. If the brief names a benchmark, use that benchmark — a score
+  nobody else computes is a score nobody can compare.
+* At least one `metric` rubric and at least one `implementation` rubric, each
+  naming the file and key its evidence comes from. Ids are stable snake_case.
+* `evaluator` and `program0` are paths that exist by the time you are done. A task
+  with no evaluator has no score, and a task with no baseline has no threshold.
+* Run the evaluator on the baseline and require `correct` true with a score above
+  zero. If it is not, the *specification* is wrong — fix the specification, never
+  the number. Then run it on a candidate you know is bad and confirm the failure
+  is recorded rather than raised.
+* Do not write `items`, `ideas`, `attempts`, `best`, `conclusions` or `verdict`.
+  The items are the explorer's, and everything else does not exist yet.
+
+{rules}
+"""
+
+WRITER_PROMPT = """The campaign has stopped finding work: the verifier signed off, the list is
+complete, and the explorer added nothing this round. Publish what it has.
+
+What the user asked for: {task}
+
+The record is a file: {path}
+
+{todo}
+
+{campaign}The verifier's last word: {verdict}
+
+{report}Write the report out of that record and out of nothing else:
+
+* Every quantitative claim resolves to a file the campaign wrote — a
+  `metrics.json`, a `correct.json`, or an attempt in the state file. A number you
+  computed yourself to fill a gap is a number you invented.
+* The claim-to-source map is part of the output, not an appendix: one row per
+  quantitative claim, naming the file, the key and the attempt id. It is what
+  lets a reader audit the report in one pass, and it is why there is no separate
+  auditor behind you.
+* FAILED AND ABANDONED is not a courtesy section. A negative result is the only
+  evidence that a direction is closed, and a report that omits it sends the next
+  round straight back into it.
+* You are read-only on the code and on the artifacts. Do not re-run an experiment
+  to fill a gap: a writer that runs the experiment stops being a witness and
+  becomes an unaudited source.
+* Do not write `verdict`, `best`, `conclusions`, `items`, `ideas` or `attempts`.
+  The record is what you describe, not what you edit.
+
+{rules}
+"""
+
 
 def _findings_block(verifier_report: str) -> str:
     if not verifier_report.strip():
@@ -530,7 +609,7 @@ async def _reload(turn: Turn, path: Path, before: Todo) -> tuple[Todo, list[str]
     return after, _changes(before, after)
 
 
-def pipeline(
+def _loop(
     worker: Role,
     verifier: Role,
     explorer: Role,
@@ -539,10 +618,14 @@ def pipeline(
     max_review: int = 5,
     announce: bool = True,
     state_path: Optional[Path] = None,
+    drafter: Optional[Role] = None,
+    writer: Optional[Role] = None,
 ) -> Workflow:
-    """The loop: worker -> verifier until sign-off on a complete list, then the
-    explorer adds more items, then round again. It does not end by itself;
-    ``session/cancel`` ends it.
+    """The one loop. :func:`pipeline` and :func:`scientist` are its two doors.
+
+    Worker -> verifier until sign-off on a complete list, then the explorer adds
+    more items, then round again. It does not end by itself; ``session/cancel``
+    ends it.
 
     The state lives in the file at ``state_path`` — by default
     ``.crow-research/todo.json`` under the working directory the session was
@@ -566,6 +649,14 @@ def pipeline(
     Nothing in here is on a clock. A turn ends when the child ends it and the
     loop ends when the client cancels it — an explorer that adds nothing simply
     gets asked again, which is what "in perpetuity" means.
+
+    ``drafter`` and ``writer`` are what make it a campaign rather than a list, and
+    neither is a phase: the drafter gets one turn, only when the file has no
+    ``task``, and the writer gets a turn whenever a round signs off on a complete
+    list whose explorer added nothing — which is as often as the campaign runs out
+    of work, which is as often as it likes. The host-side campaign steps
+    (scaffolding the rubric ids before the verifier, recomputing ``best`` after
+    it) run only when the file has a ``task``, so a plain list never sees them.
     """
 
     async def workflow(turn: Turn) -> Optional[str]:
@@ -574,6 +665,39 @@ def pipeline(
         last: Optional[str] = None
         verifier_report = ""
         round_no = 0
+
+        # -- the drafter, once, and only because nothing can be scored yet
+        if drafter is not None and state.task is None:
+            turn._check()
+            if announce:
+                await turn.notice(
+                    f"{drafter.label} drafting the task",
+                    description="the state file has no task specification, so there is "
+                                "no evaluator, no baseline and nothing to score",
+                )
+            drafter_result = await turn.run(
+                drafter,
+                DRAFTER_PROMPT.format(
+                    task=turn.prompt.strip() or "(the client sent no task text)",
+                    path=path, todo=state.render(), task_schema=TASK_SCHEMA, rules=STATE_RULES,
+                ),
+            )
+            last = drafter_result.stop_reason
+            state, moved = await _reload(turn, path, state)
+            for line in moved:
+                await turn.notice(line)
+            if announce and state.task is None:
+                # Not retried and not fatal. A campaign with no task specification
+                # is a list, and the loop below still runs — it just has no
+                # evaluator, so nothing scores and ``best`` never moves. Saying so
+                # is better than quietly downgrading the run.
+                await turn.notice(
+                    f"{drafter.label} wrote no task",
+                    severity="warning",
+                    description="the run continues as a plain todo list: no evaluator, "
+                                "no baseline, no scores",
+                )
+
         while True:
             turn._check()
             round_no += 1
@@ -624,6 +748,17 @@ def pipeline(
                         await turn.notice(line)
                     turn._check()
 
+                # -- the host pre-creates the scaffold the verifier is about to
+                # fill. The ids come from the idea the explorer wrote, so a rubric
+                # the worker left out comes back and one it invented goes: an
+                # invented criterion is how a round starts being graded on
+                # something nobody proposed. The *values* stay the verifier's.
+                if state.task is not None:
+                    for line in state.repair_scaffolds():
+                        state.save(path)
+                        if announce:
+                            await turn.notice(line)
+
                 if announce:
                     await turn.notice(f"round {round_no} · {verifier.label}", description="signing off on the pass")
                 verifier_result = await turn.run(
@@ -639,6 +774,25 @@ def pipeline(
                 for line in moved:
                     await turn.notice(line)
                 verifier_report = verifier_result.report
+                # -- and the host computes the aggregates nobody is allowed to
+                # assert. ``overall_pass`` is a property, so it is already
+                # recomputed on load; ``best`` is a field, so it is re-derived
+                # from the evidence here. Idempotent, which is what makes it safe
+                # to run after every turn rather than only after a good one.
+                if state.task is not None:
+                    was = state.best
+                    state.recompute_best()
+                    if state.best != was:
+                        state.save(path)
+                        if announce:
+                            before_best = f"{was.program} ({was.score})" if was else "(none)"
+                            after_best = (f"{state.best.program} ({state.best.score})"
+                                          if state.best else "(none — no verified correct candidate)")
+                            await turn.notice(
+                                f"best {before_best} -> {after_best}",
+                                description="the gate is the host's: every rubric passed, the "
+                                            "candidate is correct, and it strictly beats the incumbent",
+                            )
                 if announce:
                     await turn.notice(
                         f"round {round_no} · verdict {state.verdict or 'UNREPORTED'}",
@@ -671,9 +825,100 @@ def pipeline(
                     f"round {round_no} · {explorer.label} added {len(added)} items",
                     description="; ".join(i.text[:60] for i in added) or "nothing added — the loop continues",
                 )
+
+            # -- the writer publishes what the campaign has, and the loop goes on
+            # anyway. "The explorer added nothing" is not "the campaign is
+            # finished" — nothing here is finished, because nothing here stops.
+            # It is only the moment when there is something worth writing down.
+            if writer is not None and not added and state.complete and state.verdict is not None:
+                turn._check()
+                if announce:
+                    await turn.notice(
+                        f"round {round_no} · {writer.label}",
+                        description="the round signed off and the explorer added nothing — "
+                                    "publishing what the campaign has",
+                    )
+                writer_result = await turn.run(
+                    writer,
+                    WRITER_PROMPT.format(
+                        task=turn.prompt.strip() or "(the client sent no task text)",
+                        path=path, todo=state.render(), campaign=_campaign_block(state),
+                        verdict=state.verdict or "UNREPORTED",
+                        report=_findings_block(verifier_report),
+                        schema=STATE_SCHEMA, rules=STATE_RULES,
+                    ),
+                )
+                last = writer_result.stop_reason
+                state, moved = await _reload(turn, path, state)
+                for line in moved:
+                    await turn.notice(line)
+
             # The verdict stays in the file. It is the verifier's to set and the
             # next round's verifier overwrites it; the orchestrator writing null
             # over an agent's key would be the orchestrator doing the work.
             verifier_report = ""
 
     return workflow
+
+
+def pipeline(
+    worker: Role,
+    verifier: Role,
+    explorer: Role,
+    todo: Todo,
+    *,
+    max_review: int = 5,
+    announce: bool = True,
+    state_path: Optional[Path] = None,
+) -> Workflow:
+    """The loop on a todo list: worker -> verifier until sign-off on a complete
+    list, then the explorer adds more items, then round again. It does not end by
+    itself; ``session/cancel`` ends it. See :func:`_loop`, which is the loop.
+
+    A list with no ``task`` in it never sees the campaign steps, so this is the
+    same workflow it always was: three roles, one file, no clock.
+    """
+    return _loop(worker, verifier, explorer, todo, max_review=max_review,
+                 announce=announce, state_path=state_path)
+
+
+def scientist(
+    drafter: Role,
+    worker: Role,
+    verifier: Role,
+    explorer: Role,
+    writer: Role,
+    todo: Todo,
+    *,
+    announce: bool = True,
+    state_path: Optional[Path] = None,
+) -> Workflow:
+    """The same loop, as a research campaign: five roles instead of three.
+
+    The drafter goes first and at most once, only when the file has no ``task`` —
+    because without an evaluator there is no score, and without a score "better"
+    is a vibe the verifier cannot check and ``best`` cannot be gated on. Then the
+    loop runs exactly as :func:`pipeline` runs it, with three host-side steps that
+    a campaign needs and a list does not:
+
+    * before each verifier turn, every attempt's rubric *ids* are put back to the
+      ids its idea named, so the verifier fills the scaffold the explorer wrote
+      rather than one the worker chose;
+    * after each verifier turn, ``best`` is re-derived from the attempts, because
+      it is an aggregate and aggregates are the host's — an agent that wrote one
+      has changed the file, not the campaign;
+    * when a round signs off on a complete list and the explorer adds nothing, the
+      writer publishes what the campaign has.
+
+    That last one is not an ending. The writer's turn is followed by the next
+    round like any other turn, because a campaign that stopped when it ran out of
+    work would be a pipeline with a budget, and the whole point of this one is
+    that ``session/cancel`` is the only exit.
+
+    Nothing in here is on a clock and nothing in here is capped. A rejected idea
+    is a notice, not a retry counter: the loader refuses it, the last good copy
+    goes back in its place, the problem is announced upstream, and the next round
+    asks the explorer again.
+    """
+    return _loop(worker, verifier, explorer, todo, announce=announce,
+                 state_path=state_path, drafter=drafter, writer=writer)

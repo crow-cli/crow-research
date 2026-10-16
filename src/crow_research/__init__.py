@@ -29,7 +29,7 @@ from .roles import BUILTIN, DRAFTER, EXPLORER, RESEARCHER, VERIFIER, WORKER, WRI
 from .todo import Item, Todo, state_path
 from .transport import Endpoint, Http, Stdio, Ws, open_endpoint, parse_endpoint
 from .turn import META_AGENT, Turn, TurnCancelled
-from .workflows import COMPACT_PROMPT, chain, forever, pipeline, rounds, select, single
+from .workflows import COMPACT_PROMPT, chain, forever, pipeline, rounds, scientist, select, single
 
 __all__ = [
     "BUILTIN",
@@ -64,6 +64,7 @@ __all__ = [
     "pipeline",
     "resolve",
     "rounds",
+    "scientist",
     "select",
     "serve_http",
     "serve_stdio",

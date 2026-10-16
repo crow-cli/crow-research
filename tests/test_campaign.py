@@ -312,6 +312,115 @@ def test_best_is_not_moved_by_an_unverified_better_score() -> None:
     assert todo.best.program == "program_1"
 
 
+def test_recompute_best_lands_where_the_incremental_gate_landed() -> None:
+    """Replaying every attempt through the gate is the same answer as applying it
+    once per turn — which is what makes it safe to run after every turn."""
+    todo = _campaign((1.0, True), (2.0, True), (1.5, True), (9.0, False))
+    incremental = todo.best
+    assert todo.recompute_best() == incremental
+    assert todo.recompute_best() == incremental, "not idempotent"
+
+
+def test_recompute_best_corrects_an_incumbent_an_agent_wrote() -> None:
+    """`best` is a field, so an agent *can* write it. Recomputing is what makes
+    writing it pointless rather than merely discouraged."""
+    todo = _campaign((1.0, True))
+    todo.best = Best(program="program_9", score=99.0, attempt_id=99)
+    assert todo.recompute_best() == Best(program="program_1", score=1.0, attempt_id=1)
+
+
+def test_recompute_best_clears_an_incumbent_the_evidence_stopped_supporting() -> None:
+    """A verdict the verifier walks back takes the incumbent with it."""
+    todo = _campaign((1.0, True))
+    assert todo.best is not None
+    todo.apply_rubric_status(1, [{"id": "score_threshold", "pass": False,
+                                  "evidence": "2.71 is not above the threshold after all"}])
+    assert todo.recompute_best() is None
+
+
+def test_recompute_best_on_a_campaign_with_no_attempts() -> None:
+    assert Todo().recompute_best() is None
+    assert _campaign().recompute_best() is None
+
+
+# -- the host-owned scaffold --------------------------------------------
+
+
+def _file_campaign(attempts: list[dict]) -> Todo:
+    """A document as an agent would have written it: ideas from the explorer,
+    attempts from the worker, and no host in between."""
+    return Todo.from_dict({
+        "task": {"goal": "pack them", "rubrics": BUNDLE,
+                 "evaluator": "evaluate.py", "program0": "program_0"},
+        "ideas": [idea_doc()],
+        "attempts": attempts,
+    })
+
+
+def test_repair_scaffolds_adds_back_the_rubrics_a_worker_left_out() -> None:
+    """The common case: the worker recorded the attempt and never touched the
+    rubrics, so the verifier would be dispatched with nothing to fill in."""
+    todo = _file_campaign([attempt_doc(rubrics=[])])
+    lines = todo.repair_scaffolds()
+
+    assert lines == ["attempt 1 scaffolded with 2 rubrics"], lines
+    assert [r.id for r in todo.attempts[0].rubrics] == ["score_threshold", "uses_restarts"]
+    assert all(not r.passed and r.evidence == "" for r in todo.attempts[0].rubrics)
+    assert todo.attempts[0].overall_pass is False
+
+
+def test_repair_scaffolds_drops_a_rubric_the_worker_invented() -> None:
+    """An invented criterion is how a round starts being graded on something
+    nobody proposed, so it does not survive to the verifier."""
+    todo = _file_campaign([attempt_doc(rubrics=[
+        {"id": "score_threshold", "pass": False, "evidence": ""},
+        {"id": "uses_restarts", "pass": False, "evidence": ""},
+        {"id": "tasteful_naming", "pass": True, "evidence": "looks nice"},
+    ])])
+    lines = todo.repair_scaffolds()
+
+    assert "dropped tasteful_naming" in lines[0], lines
+    assert [r.id for r in todo.attempts[0].rubrics] == ["score_threshold", "uses_restarts"]
+
+
+def test_repair_scaffolds_leaves_a_verifiers_judgment_alone() -> None:
+    """The ids are the host's and the values are the verifier's. Repairing one
+    must not erase the other, or a resumed round loses its evidence."""
+    todo = _file_campaign([attempt_doc(rubrics=[
+        {"id": "score_threshold", "pass": True, "evidence": "metrics.json combined_score 2.71"},
+        {"id": "uses_restarts", "pass": False, "evidence": "no restart loop in the source"},
+    ])])
+    assert todo.repair_scaffolds() == []
+    assert [(r.id, r.passed) for r in todo.attempts[0].rubrics] == [
+        ("score_threshold", True), ("uses_restarts", False)]
+    assert todo.attempts[0].overall_pass is False
+
+
+def test_repair_scaffolds_is_quiet_when_there_is_nothing_to_repair() -> None:
+    todo = _campaign((1.0, True))
+    assert todo.repair_scaffolds() == []
+
+
+def test_repair_scaffolds_leaves_an_attempt_for_an_unknown_idea_alone() -> None:
+    """`from_dict` already refuses that document; repair is not a second loader."""
+    todo = _file_campaign([attempt_doc(rubrics=[])])
+    todo.ideas = []
+    assert todo.repair_scaffolds() == []
+
+
+def test_a_repaired_scaffold_survives_the_file(tmp_path) -> None:
+    """The repair is written, not held: the verifier reads the file, and so does
+    the next process."""
+    todo = _file_campaign([attempt_doc(rubrics=[])])
+    todo.repair_scaffolds()
+    path = todo.save(tmp_path / "todo.json")
+    reloaded = Todo.load(path)
+
+    assert [r.id for r in reloaded.attempts[0].rubrics] == ["score_threshold", "uses_restarts"]
+    assert reloaded.attempts[0].overall_pass is False
+    assert reloaded.best is None
+
+
 def test_next_program_index_counts_up_and_never_reuses() -> None:
     todo = _campaign((1.0, True), (2.0, True))
     assert todo.next_program_index() == 3

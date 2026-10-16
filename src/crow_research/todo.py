@@ -376,14 +376,71 @@ class Todo:
                           stop_reason=attempt.stop_reason, note=attempt.note,
                           next_recommendation=next_recommendation.strip())
         self.attempts[index] = updated
-        # The one place `best` moves: the rubrics have been judged, the candidate
-        # is correct, and it beats the incumbent. Strictly beats — a tie is not
-        # progress and does not earn the campaign a new reference program.
-        score = updated.score
-        if updated.overall_pass and updated.correct and score is not None \
-                and (self.best is None or score > self.best.score):
-            self.best = Best(program=updated.program, score=score, attempt_id=updated.id)
+        self._consider_best(updated)
         return updated
+
+    def _consider_best(self, attempt: Attempt) -> bool:
+        """The gate, and the only place it lives.
+
+        The rubrics have to have been judged, the candidate has to be correct,
+        and it has to *strictly* beat the incumbent — a tie is not progress and
+        does not earn the campaign a new reference program.
+        """
+        score = attempt.score
+        if not (attempt.overall_pass and attempt.correct) or score is None:
+            return False
+        if self.best is not None and score <= self.best.score:
+            return False
+        self.best = Best(program=attempt.program, score=score, attempt_id=attempt.id)
+        return True
+
+    def recompute_best(self) -> Optional[Best]:
+        """Re-derive ``best`` from the attempts in the file.
+
+        The host's half of the split, and idempotent: replaying every attempt
+        through the gate in order lands on the same incumbent whether it is
+        called once or after every turn. Which is the point — an agent that
+        wrote a ``best`` of its own has not changed the campaign, only the file,
+        and this puts the file back to what the evidence supports.
+        """
+        self.best = None
+        for attempt in self.attempts:
+            self._consider_best(attempt)
+        return self.best
+
+    def repair_scaffolds(self) -> list[str]:
+        """Put every attempt's rubric *ids* back to the ids its idea named.
+
+        Called before the verifier is dispatched, so the scaffold it fills is the
+        scaffold the explorer wrote: a rubric the worker left out comes back as
+        ``pass`` false with empty evidence, and one it invented is dropped — an
+        invented criterion is how a round starts being graded on something nobody
+        proposed. Statuses whose id does match are left alone, because the values
+        are the verifier's and it is about to write every one of them.
+
+        Returns a line per attempt it repaired, for the orchestrator to announce.
+        """
+        lines: list[str] = []
+        for index, attempt in enumerate(self.attempts):
+            idea = self.idea(attempt.idea_id)
+            if idea is None:
+                continue
+            expected = [r.id for r in idea.rubrics]
+            if [r.id for r in attempt.rubrics] == expected:
+                continue
+            filled = {r.id: r for r in attempt.rubrics}
+            merged = tuple(filled.get(rid, RubricStatus(id=rid, passed=False, evidence=""))
+                           for rid in expected)
+            dropped = sorted(set(filled) - set(expected))
+            self.attempts[index] = Attempt(
+                id=attempt.id, idea_id=attempt.idea_id, program=attempt.program,
+                metrics=attempt.metrics, correct=attempt.correct, rubrics=merged,
+                stop_reason=attempt.stop_reason, note=attempt.note,
+                next_recommendation=attempt.next_recommendation,
+            )
+            detail = f", dropped {'/'.join(dropped)}" if dropped else ""
+            lines.append(f"attempt {attempt.id} scaffolded with {len(expected)} rubrics{detail}")
+        return lines
 
     def set_conclusions(self, text: str, *, trigger: str, reason: str = "") -> Conclusions:
         """Replace the distilled paragraph, under the gate.

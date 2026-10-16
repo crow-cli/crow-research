@@ -103,7 +103,10 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       scaffold and the explorer's rubric ids; a stub verifier filling two of three
       rubrics yields `overall_pass: false` computed by the host, not the agent.
 
-- [ ] **Workflow: `scientist`.** drafter once when there is no task spec, then the
+- [ ] **Workflow: `scientist`.** (code done in Phase 5 — `_loop` is the one loop
+      and `pipeline`/`scientist` are its two doors, `recompute_best` +
+      `repair_scaffolds` are the host-side gates, 160 passed; the wire test below
+      is PLAN 7.1) drafter once when there is no task spec, then the
       existing perpetual worker → verifier → explorer loop, then the writer when a
       signed-off round's explorer adds nothing (an idle campaign publishes what it
       has), then round again. No clocks, no caps, no retry counters. A rejected

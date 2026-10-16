@@ -252,9 +252,31 @@ the write does not parse and the round is thrown away.
 
 **4.5** ✅ Commit.
 
-## Phase 5 — the `scientist` workflow
+## Phase 5 — the `scientist` workflow  ✅ CODE DONE (2026-10-15, 160 passed)
 
-**5.1** `workflows.scientist(drafter, worker, verifier, explorer, writer, todo, *,
+Evidence: `pipeline`'s body moved wholesale into a private
+`_loop(worker, verifier, explorer, todo, *, max_review, announce, state_path,
+drafter=None, writer=None)`; `pipeline(...)` and `scientist(drafter, worker,
+verifier, explorer, writer, todo, *, announce, state_path)` are thin doors onto
+it, so there is one loop and no duplicated step. `scientist` is exported from
+`crow_research`. Three host-side campaign steps run only when the file has a
+`task`, so a plain list's prompts and behaviour are untouched: the drafter gets
+one turn before the `while True` and only when `state.task is None` (if it still
+wrote no task, a `warning` notice says the run continues as a list — no retry);
+`state.repair_scaffolds()` runs before every verifier dispatch;
+`state.recompute_best()` runs after every verifier reload and announces
+`best X -> Y` when the incumbent moved; the writer gets a turn when a round
+signed off on a complete list and the explorer added nothing, and the loop
+continues anyway. New `Todo` methods: `recompute_best()` (resets and replays
+every attempt through the same gate `apply_rubric_status` uses — idempotent, and
+it corrects an incumbent an agent wrote) and `repair_scaffolds()` (puts each
+attempt's rubric *ids* back to its idea's, returning the missing ones as
+`pass: false` with empty evidence and dropping invented ones; the *values* stay
+the verifier's). 10 new tests in `tests/test_campaign.py`, 54 in that file.
+5.2/5.3/5.4 are host-side landed and unit-tested; their stated *Verified by* is
+a wire test, which is Phase 7's file.
+
+**5.1** ✅ `workflows.scientist(drafter, worker, verifier, explorer, writer, todo, *,
 announce=True, state_path=None) -> Workflow`. Drafter dispatched once, only when
 the file has no `task`. Then the existing perpetual loop. Then, when a round
 signs off on a complete list **and** the explorer adds nothing, the writer is
@@ -262,18 +284,24 @@ dispatched to publish what the campaign has — and the round continues anyway.
 *Verified by:* the function is exported from `crow_research`; its docstring says
 plainly that nothing in it is on a clock.
 
-**5.2** A rejected idea is a notice, not a retry counter: the orchestrator
+**5.2** (host side landed in `_loop` and unit-tested; the wire test below is
+PLAN 7.1) A rejected idea is a notice, not a retry counter: the orchestrator
 validates what the explorer wrote, and on failure emits a notice naming the
 problem and lets the next round ask again.
 *Verified by:* a stub explorer scripted to write a rubric with a bad `type`
 produces the notice and the loop keeps going.
 
-**5.3** The orchestrator pre-creates the rubric scaffold before dispatching the
+**5.3** (host side landed in `_loop` — `repair_scaffolds` before the dispatch,
+`recompute_best` after the reload — and unit-tested; the wire test below is
+PLAN 7.1/7.3) The orchestrator pre-creates the rubric scaffold before dispatching the
 verifier, and computes `overall_pass` and `best` itself afterwards.
 *Verified by:* wire test — the scaffold is in the verifier's dispatch, and a stub
 verifier that lies about `overall_pass` is corrected in the file.
 
-**5.4** Conclusions are gated on the wire too: a round that writes an over-long,
+**5.4** (host side landed: `Conclusions.validate` runs in the loader, so an
+over-long paragraph is a document that does not parse, which `_reload` turns into
+an error notice plus the last good copy restored; the wire test below is
+PLAN 7.1) Conclusions are gated on the wire too: a round that writes an over-long,
 multi-paragraph, or trigger-less `conclusions` is rejected with a notice naming
 the problem, and the loop keeps going. Same shape as 5.2 — a rejection is a
 notice, never a retry counter and never a stop.
@@ -281,7 +309,7 @@ notice, never a retry counter and never a stop.
 notice, the file still holds the previous conclusions, and the next round is
 dispatched.
 
-**5.5** Commit.
+**5.5** ✅ Commit.
 
 ## Phase 6 — wiring
 
