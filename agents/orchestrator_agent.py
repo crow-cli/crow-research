@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""The pipeline agent — one file, and a client spawns it like any other ACP agent.
+"""The campaign agent — one file, and a client spawns it like any other ACP agent.
 
     python agents/orchestrator_agent.py                       # stdio, perpetual
     python agents/orchestrator_agent.py --model glm-5.3-flash # (the default)
@@ -7,7 +7,7 @@
 
 stdio is what a client spawns; ``--http`` is what a client dials —
 ``ws://127.0.0.1:2772/acp``, Streamable HTTP + WebSocket, one agent per
-connection. Same pipeline either way, and neither one stops on its own.
+connection. Same campaign either way, and neither one stops on its own.
 
 To the upstream client this is one agent: one session, one update stream, an
 ``initialize`` that answers protocol 2. In ``session/prompt`` it is a *client* —
@@ -17,21 +17,31 @@ it spawns the agent files next to it, drives them in sequence, and relays every
 
 The sequence is the point:
 
+    drafter                                           once, and only while the
+                                                      state file has no task
     worker -> verifier -> worker -> verifier -> ...   until the verdict is PASS
                                                       and the todo list is done
-    -> explorer                                       adds more items to the todo
+    -> explorer                                       adds ideas, and the items
+                                                      they need executed
+    -> writer                                         when a signed-off round's
+                                                      explorer added nothing
     -> worker -> ...                                  and it goes round again
 
 It does not stop. ``session/cancel`` stops it.
 
-The prompt the client sends is where the work comes from: it becomes the first
-item on the todo list, and from then on the agents own the list. The list is a
-JSON file — ``.crow-research/todo.json`` under the working directory the client
-opened the session on — that the worker, the verifier and the explorer edit with
-the tools they already have, and that this file only ever seeds and reads. The
-worker claims items and settles them, the verifier reopens the ones whose claims
-did not reproduce and signs off in the same document, the explorer adds what the
-finished work made possible.
+The prompt the client sends is where the work comes from: it becomes the brief
+the drafter turns into a task — a goal, the rubrics every later round is graded
+by, the evaluator that scores a candidate, and a baseline to beat — and the
+first item on the todo list. From then on the agents own the document. It is one
+JSON file, ``.crow-research/todo.json`` under the working directory the client
+opened the session on, that the five of them edit with the tools they already
+have and that this file only ever seeds and reads. The worker claims items and
+settles them, recording each candidate it built as an attempt; the verifier
+reopens the ones whose claims did not reproduce, fills in the rubric scaffold
+and signs off in the same document; the explorer adds the ideas the finished
+work made possible, with the rubrics the next verifier will check; the writer
+publishes what the campaign actually achieved, every number sourced to the file
+that shows it.
 """
 
 from __future__ import annotations
@@ -49,10 +59,10 @@ from crow_research.todo import Todo
 from crow_research.transport import Stdio
 from crow_research import workflows
 
-#: This file's directory: where the agents in the pipeline live.
+#: This file's directory: where the agents in the campaign live.
 AGENTS = Path(__file__).resolve().parent
 
-#: The local model the pipeline runs on by default.
+#: The local model the campaign runs on by default.
 DEFAULT_MODEL = "glm-5.3-flash"
 
 #: What ``--http`` binds by default. Not 2771: that is ``crow-cli acp2``'s own
@@ -61,7 +71,7 @@ DEFAULT_PORT = 2772
 
 
 def agent_role(name: str, model: Optional[str]) -> Role:
-    """One pipeline agent: its handoff framing, and the argv that runs it.
+    """One campaign agent: its handoff framing, and the argv that runs it.
 
     How you run the file *is* the acp server configuration, so this is the whole
     of the wiring. ``sys.executable`` rather than ``python`` so the child lands
@@ -86,18 +96,20 @@ def agent_role(name: str, model: Optional[str]) -> Role:
 
 
 def build(args: argparse.Namespace) -> OrchestratorAgent:
-    """Assemble the pipeline."""
+    """Assemble the campaign: five agents, one state file, no clock."""
+    drafter = agent_role("drafter", args.model)
     worker = agent_role("worker", args.model)
     verifier = agent_role("verifier", args.model)
     explorer = agent_role("explorer", args.model)
-    # The list outlives a turn, and it lives in a file rather than in this
-    # process: ``state_path`` is left unset so the pipeline puts it under the
+    writer = agent_role("writer", args.model)
+    # The campaign outlives a turn, and it lives in a file rather than in this
+    # process: ``state_path`` is left unset so the workflow puts it under the
     # working directory the client opened the session on — the directory the
     # agents are actually working in. The prompt that arrives on
     # ``session/prompt`` seeds it. The ``Todo()`` is the seed a Python caller
     # supplies instead, and it is empty here.
     return OrchestratorAgent(
-        workflows.pipeline(worker, verifier, explorer, Todo()),
+        workflows.scientist(drafter, worker, verifier, explorer, writer, Todo()),
         name=args.name,
         title=args.title,
         mcp_servers=None,  # None -> crow's own configured tool supply, per child

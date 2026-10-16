@@ -44,28 +44,45 @@ def serve_argv(args: argparse.Namespace) -> list[str]:
     return argv
 
 
+#: Which roles each stateful workflow needs, in the order the workflow takes them.
+CASTS = {
+    "pipeline": ("worker", "verifier", "explorer"),
+    "scientist": ("drafter", "worker", "verifier", "explorer", "writer"),
+}
+
+
+def _cast(roles: list[Role], workflow: str) -> dict[str, Role]:
+    """The roles by name, or a ``SystemExit`` naming the ones that are missing."""
+    by = {r.name: r for r in roles}
+    missing = [n for n in CASTS[workflow] if n not in by]
+    if missing:
+        raise SystemExit(f"--workflow {workflow} needs a role for each of: {', '.join(missing)}")
+    return by
+
+
 def build_workflow(args: argparse.Namespace) -> Workflow:
     """Turn parsed flags into the callable the orchestrator runs."""
     roles = [resolve(spec, cwd=args.cwd) for spec in args.role] or [
         BUILTIN[name] for name in DEFAULT_CHAIN
     ]
     common = {"compact": args.compact}
+    # The list outlives the turn — the explorer's items are what the next round
+    # works on — and it lives in a file, so a run can be picked up where it left
+    # off. ``--cwd`` pins that file; without it the workflow puts it under the
+    # working directory the session was opened on.
+    state = state_path(args.cwd) if args.cwd else None
     if args.workflow == "single":
         inner: Workflow = workflows.single(roles[0])
     elif args.workflow == "chain":
         inner = workflows.chain(*roles, **common)
     elif args.workflow == "pipeline":
-        by = {r.name: r for r in roles}
-        missing = [n for n in ("worker", "verifier", "explorer") if n not in by]
-        if missing:
-            raise SystemExit(f"--workflow pipeline needs a role for each of: {', '.join(missing)}")
-        # The list outlives the turn — the explorer's items are what the next
-        # round works on — and it lives in a file, so a run can be picked up
-        # where it left off. ``--cwd`` pins that file; without it the pipeline
-        # puts it under the working directory the session was opened on.
-        inner = workflows.pipeline(
-            by["worker"], by["verifier"], by["explorer"], Todo(),
-            state_path=state_path(args.cwd) if args.cwd else None,
+        by = _cast(roles, "pipeline")
+        inner = workflows.pipeline(by["worker"], by["verifier"], by["explorer"], Todo(), state_path=state)
+    elif args.workflow == "scientist":
+        by = _cast(roles, "scientist")
+        inner = workflows.scientist(
+            by["drafter"], by["worker"], by["verifier"], by["explorer"], by["writer"],
+            Todo(), state_path=state,
         )
     else:
         raise SystemExit(f"unknown workflow {args.workflow!r}")
@@ -132,7 +149,10 @@ def parser() -> argparse.ArgumentParser:
     sub = top.add_subparsers(dest="command", required=True)
 
     def common(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--workflow", choices=("chain", "single", "pipeline"), default="chain")
+        p.add_argument("--workflow", choices=("chain", "single", "pipeline", "scientist"), default="chain",
+                       help="chain: hand off in order. single: one role. pipeline: worker/verifier/explorer "
+                            "on a todo file, forever. scientist: the pipeline as a research campaign, with a "
+                            "drafter in front and a writer at the end of a quiet round")
         p.add_argument(
             "--role",
             action="append",

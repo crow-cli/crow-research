@@ -311,17 +311,36 @@ dispatched.
 
 **5.5** ✅ Commit.
 
-## Phase 6 — wiring
+## Phase 6 — wiring  ✅ DONE (2026-10-15, 160 passed)
 
-**6.1** `cli.py`: `--workflow scientist` builds the five-role cast from `--role`
+Evidence: `cli.py` grows `CASTS` — the one table saying which roles each stateful
+workflow needs — and `_cast(roles, workflow)`, which raises a `SystemExit` naming
+the roles a `--workflow` was not given; `build_workflow` gains a `scientist`
+branch, `state_path(args.cwd)` is hoisted so both stateful workflows pin the
+file the same way, and `--workflow` offers `scientist` with a help string. No new
+flag: a cast is still `--role name[=endpoint]` repeated. Verified by
+`serve --help` (all four workflows listed, `scientist` described), a dry
+`build_workflow` over five stub-pointed specs, and the missing-role exit
+(`--workflow scientist needs a role for each of: drafter, explorer, writer`).
+`agents/orchestrator_agent.py` now builds `workflows.scientist(...)` from five
+`agent_role(...)` calls — same flags, same defaults, same `--name`/`--title`, so
+the stdio entry in `~/.agents/crow/settings.json` is unchanged — and its module
+docstring's sequence diagram grows the drafter and the writer. Two new tests in
+`test_roles.py`: a stdio spawn-and-handshake of the agent file (the `--http` one
+already existed in `test_http.py`), and `build()` called for real with both
+workflow constructors watched, asserting the cast is exactly `CASTS["scientist"]`
+and that `pipeline` is never reached. Mutation-checked: pointing `build()` back at
+`workflows.pipeline` fails it.
+
+**6.1** ✅ `cli.py`: `--workflow scientist` builds the five-role cast from `--role`
 specs, defaulting each to its own agent file.
 *Verified by:* `uv run crow-research serve --workflow scientist --help` and a dry
 construction with all five roles pointed at the stub.
 
-**6.2** `agents/orchestrator_agent.py`: the scientist cast, same flags as today.
+**6.2** ✅ `agents/orchestrator_agent.py`: the scientist cast, same flags as today.
 *Verified by:* spawn-and-handshake over stdio and over `--http`.
 
-**6.3** Commit.
+**6.3** ✅ Commit.
 
 ## Phase 7 — tests over the real wire
 

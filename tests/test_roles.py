@@ -16,6 +16,7 @@ the entire reason ``role_prompt`` patches a template instead of freezing a copy.
 
 from __future__ import annotations
 
+import argparse
 import ast
 import asyncio
 import contextlib
@@ -30,7 +31,8 @@ import pytest
 from crow_cli.agent.prompt import default_system_prompt
 from crow_cli.config import Config
 
-from crow_research import BUILTIN, DRAFTER, WRITER, Peer, Role, Stdio, Ws, resolve
+from crow_research import BUILTIN, DRAFTER, WRITER, OrchestratorAgent, Peer, Role, Stdio, Ws, resolve
+from crow_research.cli import CASTS
 from crow_research.prompts import sections
 from test_http import free_port, wait_for_port  # noqa: E402  (pytest puts tests/ on sys.path)
 from test_orchestrator import Recorder  # noqa: E402
@@ -255,3 +257,55 @@ def test_no_two_agent_files_share_a_default_port():
             continue
         assert port != CROW_CLI_ACP2_PORT, f"{name} defaults to a port crow-cli acp2 already binds"
         assert port != ports[ORCHESTRATOR], f"{name} defaults to the orchestrator's own port"
+
+
+# --- 6.2 the orchestrator file casts the campaign ---------------------------
+
+
+async def test_the_orchestrator_file_serves_stdio():
+    """``python agents/orchestrator_agent.py`` is what a client spawns: v2 over
+    its own stdin, and a session opened on it.
+
+    Only the handshake — a prompt would start a campaign on a real model. The
+    five children are spawned per turn rather than at import, so this costs one
+    process and no tokens.
+    """
+    peer = Peer(
+        Role(name="orchestrator", endpoint=Stdio((sys.executable, str(AGENTS / ORCHESTRATOR)))),
+        client_factory=Recorder,
+    )
+    session_id = await peer.start(str(ROOT))
+    try:
+        assert session_id, "session/new came back with no id"
+    finally:
+        await peer.close()
+
+
+def test_the_orchestrator_file_casts_the_scientist_workflow(monkeypatch):
+    """The spawned file casts all five roles, and ``cli.CASTS`` is what says which
+    five.
+
+    Two files stating one fact is a drift waiting to happen, and the drift is
+    silent: an orchestrator with no drafter still serves, still handshakes and
+    still runs — it just never writes a task, so every round is graded by
+    nothing. ``build()`` is called for real here, with the two workflow
+    constructors watched, so the assertion is about what it does and not about
+    what its source looks like.
+    """
+    module = load_agent("orchestrator")
+    monkeypatch.setattr(module, "agent_role", lambda name, model: Role(name=name))
+    cast: list[tuple[str, ...]] = []
+
+    def fake_scientist(*args, **kwargs):
+        cast.append(tuple(a.name for a in args if isinstance(a, Role)))
+        return lambda turn: None
+
+    monkeypatch.setattr(module.workflows, "scientist", fake_scientist)
+    monkeypatch.setattr(
+        module.workflows, "pipeline",
+        lambda *a, **kw: pytest.fail("the orchestrator file still builds the plain pipeline"),
+    )
+
+    agent = module.build(argparse.Namespace(model=None, name="crow-research", title="t"))
+    assert isinstance(agent, OrchestratorAgent)
+    assert cast == [CASTS["scientist"]], cast

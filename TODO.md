@@ -116,7 +116,10 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       `drafter → worker → verifier → explorer → writer`, role stamps, notices, and
       that the loop is still going when the test cancels it.
 
-- [ ] **CLI + orchestrator wiring.** `--workflow scientist`, `--role drafter=…`,
+- [x] **CLI + orchestrator wiring.** (Phase 6 — `CASTS` + `_cast` in `cli.py`,
+      `build_workflow`'s `scientist` branch, `agents/orchestrator_agent.py` casts
+      all five with the same flags as before; 2 new tests in `test_roles.py`,
+      160 passed) `--workflow scientist`, `--role drafter=…`,
       `--role writer=…`; `agents/orchestrator_agent.py` casts the five roles.
       *Verified by:* `uv run crow-research serve --workflow scientist --help`;
       the orchestrator file spawns all five stubs and the http test still passes.
