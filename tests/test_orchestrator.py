@@ -15,8 +15,11 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import signal
+import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +136,47 @@ async def test_cancel_ends_the_turn_and_reports_it() -> None:
             assert states == ["running", "idle"], states
         finally:
             await peer.close()
+
+
+def test_ctrl_c_in_the_client_is_session_cancel() -> None:
+    """Ctrl-C is the loop's only exit, so it has to actually reach the wire.
+
+    ``asyncio`` installs its own SIGINT handler and turns the *first* press into a
+    cancellation of the running coroutine rather than a ``KeyboardInterrupt``, so
+    a client that catches only ``KeyboardInterrupt`` catches nothing: the cancel is
+    never sent, the child is never told, and the run ends in a traceback instead of
+    a ``stop_reason``. This drives the real console script as a subprocess, presses
+    Ctrl-C once, and reads what it printed.
+    """
+    env = {**os.environ, "STUB_DELAY": "30"}
+    with tempfile.TemporaryDirectory() as tmp:
+        argv = [
+            sys.executable, "-m", "crow_research.repl_client",
+            "--cwd", tmp, "-p", "something slow",
+            "--", sys.executable, str(STUB), "orchestrator",
+        ]
+        log = Path(tmp) / "client.log"
+        with log.open("wb") as sink:
+            # Its own process group, so the signal reaches the client and not the
+            # agent it spawned: the graceful path is the thing under test.
+            proc = subprocess.Popen(argv, cwd=ROOT, stdout=sink, stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, env=env, start_new_session=True)
+            try:
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline and b"something slow" not in log.read_bytes():
+                    time.sleep(0.05)
+                assert b"something slow" in log.read_bytes(), "the turn never got in flight"
+                proc.send_signal(signal.SIGINT)
+                assert proc.wait(timeout=30) == 0, "Ctrl-C did not exit cleanly"
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=10)
+        out = log.read_text()
+    assert "cancelling..." in out, out[-800:]
+    # Only ``cancel_session`` produces this: the stub answers a cancel with
+    # idle(cancelled), so the stop reason is proof the request crossed the wire.
+    assert "stop_reason: cancelled" in out, out[-800:]
 
 
 async def test_autostart_works_without_a_prompt() -> None:

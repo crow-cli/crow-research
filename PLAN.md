@@ -412,13 +412,56 @@ own, and the host taking both back with a notice), **5.4**
 explorer-contract handover
 (`test_an_idea_the_explorer_writes_lands_in_the_file_and_reaches_the_worker`).
 
-## Phase 8 — docs
+## Phase 8 — docs  ✅ DONE (2026-10-16, 168 passed)
 
-**8.1** README: the mapping table, "what we took", "what we refused and why", how
-to run a campaign against `examples/tasks/circpack`, and the new test count.
+**8.1** ✅ README: the mapping table, "what we took", "what we refused and why",
+how to run a campaign against `examples/tasks/circpack`, and the new test count.
 *Verified by:* every command in the new prose actually runs, copy-pasted.
 
-**8.2** Commit.
+Evidence: four new sections and six corrected ones. New — `## The campaign` (the
+five-role sequence, its own ASCII diagram with the two loops on separate columns,
+`repair_scaffolds()` and `recompute_best()` as the host's two steps, and why
+`overall_pass` is a property); `## Redoing The Agentic Scientist` (the §3.1–§3.5
+mapping table, `### What we took` — eight items, `### What we refused, and why` —
+five, plus a closing paragraph naming the three that are out of scope rather than
+refused); `### Running a campaign against circpack`; and two new bullets in
+`## What is tested`. Corrected — the contract section now shows the whole document
+instead of three keys and its `| who | writes |` table names the drafter, the
+writer and the host; the prompt table gains `drafter_agent.py` and
+`writer_agent.py` and **all five char counts were re-measured**, because Phase 4
+had grown them and the README still carried the pre-campaign numbers (worker
+21179 → 23362, verifier 18607 → 20767, explorer 20105 → 22160); the module table
+gains `campaign.py` and `examples/tasks/circpack/` and its `todo.py`,
+`workflows.py`, `roles.py` and `cli.py` rows now describe what is there; the run
+table gains runs 6, 7 and 8 out of their logs; `## Next` gains a second task,
+parallel workers and figures; "the three roles share one transcript" is five.
+
+Every command was run. The `/tmp/circpack-run` setup block ran copy-pasted — and
+the first copy committed two `.pyc` files, so the block grew an
+`echo "__pycache__/" > .gitignore` line and a sentence saying why (the evaluator
+imports each candidate in-process). `crow-research serve --workflow scientist
+--role worker` prints exactly the `_cast` line the prose quotes. The
+`scientist(...)` snippet was executed. The `repl_client` campaign command was run
+verbatim against `/tmp/circpack-run` and reached `Session: orch-1 (… protocol 2)`,
+`⚠ todo seeded with 1 items` and `⚠ Drafter` before being cancelled.
+
+**The verification criterion found a product bug.** The prose claims Ctrl-C sends
+`session/cancel`; checking the negative half of the absolute-path claim meant
+running `repl_client` and signalling it, and it exited `-2` with a traceback
+instead of cancelling. `asyncio.Runner` installs its own SIGINT handler whose
+first press *cancels the main task*, so the `except KeyboardInterrupt` around
+`client.send(prompt)` was dead code and the cancel was never sent — the loop's
+only exit did not work. Runs 5–8 never caught it because they were all ended by
+the since-deleted `--cancel-after`, which called `client.cancel()` directly.
+Fixed in `repl_client.py` by catching `asyncio.CancelledError` alongside
+`KeyboardInterrupt` in the `-p` path and in both of the REPL's, with a comment
+saying why. Pinned by `test_ctrl_c_in_the_client_is_session_cancel` in
+`tests/test_orchestrator.py`: the console script as a subprocess in its own
+process group, one `SIGINT`, and `stop_reason: cancelled` plus exit 0 asserted off
+what it printed. Mutation-checked — reverting the exception tuple gives `rc -2`
+and a red test. 168 passed.
+
+**8.2** ✅ Commit.
 
 ## Phase 9 — a real run
 

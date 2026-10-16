@@ -156,9 +156,31 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       *Verified by:* unit test on the length/shape validation; wire test that a
       stub writing an over-long conclusions string is rejected with a notice.
 
-- [ ] **Docs.** README: the mapping table above, what was taken, what was refused
-      and why, and how to run a campaign. Test counts updated.
-      *Verified by:* every command in the new section actually runs.
+- [x] **Docs.** (Phase 8 — README grows `## The campaign`, `## Redoing The
+      Agentic Scientist` with the mapping table + took/refused, and
+      `### Running a campaign against circpack`; the contract section shows the
+      whole document and names every owner including the host; the prompt table
+      gains drafter/writer and its char counts are re-measured, they had drifted;
+      the module table gains `campaign.py` and `examples/tasks/circpack/`; the run
+      table gains runs 6, 7 and 8; 168 passed) README: the mapping table above,
+      what was taken, what was refused and why, and how to run a campaign. Test
+      counts updated.
+      *Verified by:* every command in the new section actually runs — the
+      `/tmp/circpack-run` setup block ran copy-pasted and committed 4 files (a
+      `.gitignore` line was added to it after `__pycache__` showed up in the
+      first copy); `crow-research serve --workflow scientist --role worker`
+      prints exactly the `_cast` error the prose quotes; the `repl_client`
+      campaign command was run verbatim against `/tmp/circpack-run` and reached
+      `⚠ Drafter` before being cancelled; the `scientist(...)` Python snippet
+      was executed; the relative-agent-path claim was checked by running it and
+      watching the connection close. **That last check found a real bug**: Ctrl-C
+      in `-p` mode never sent `session/cancel` — `asyncio` turns the first SIGINT
+      into a cancellation of the running coroutine, so the `except
+      KeyboardInterrupt` was dead and the client died with a traceback and rc -2.
+      Fixed in `repl_client.py` (catch `asyncio.CancelledError` too, in both the
+      `-p` path and the REPL) and pinned by
+      `test_ctrl_c_in_the_client_is_session_cancel`, mutation-checked: reverting
+      the tuple gives rc -2 and a red test.
 
 - [ ] **A real run.** One end-to-end campaign on local `glm-5.3-flash` against
       `examples/tasks/circpack/`, ended by hand with `session/cancel`, evidence

@@ -265,14 +265,14 @@ class ReplClient:
                 line = await asyncio.get_running_loop().run_in_executor(
                     None, lambda: self.console.input(Text("repl> ", style="bold magenta"))
                 )
-            except (EOFError, KeyboardInterrupt):
+            except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
                 self.console.print("\n[yellow]Goodbye![/yellow]")
                 break
             if not line.strip():
                 continue
             try:
                 await self.send(line)
-            except KeyboardInterrupt:
+            except (KeyboardInterrupt, asyncio.CancelledError):
                 self.console.print("\n[yellow]cancelling turn...[/yellow]")
                 await self.cancel()
 
@@ -379,10 +379,16 @@ async def _amain(argv: list[str]) -> int:
     try:
         if prompt:
             # No clock stops a perpetual pipeline; the user does. Ctrl-C is
-            # ``session/cancel``, which is the seam the spec names.
+            # ``session/cancel``, which is the seam the spec names. It arrives as
+            # a *cancellation of this coroutine*, not as a KeyboardInterrupt:
+            # asyncio installs its own SIGINT handler, and its first press cancels
+            # the main task. Catching only KeyboardInterrupt therefore caught
+            # nothing, the cancel was never sent, and the only exit the loop has
+            # was a traceback. A second press raises for real, and that one does
+            # skip the graceful teardown.
             try:
                 stop = await client.send(prompt)
-            except KeyboardInterrupt:
+            except (KeyboardInterrupt, asyncio.CancelledError):
                 print("\ncancelling...")
                 await client.cancel()
                 stop = await client.wait()
