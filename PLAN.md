@@ -33,16 +33,26 @@ Hard rules for every item, inherited from the session that started this:
 
 ---
 
-## Phase 1 — the campaign document
+## Phase 1 — the campaign document  ✅ DONE (`ddb8e3f`, 2026-10-15, 96 passed)
 
-**1.1** Read `src/crow_research/todo.py` end to end before touching it. Note
+Evidence: `src/crow_research/campaign.py` (types + every rejection), `Todo` grows
+`task`/`ideas`/`attempts`/`best`/`conclusions` plus `add_idea`, `idea`,
+`latest_idea`, `scaffold_rubrics`, `next_program_index`, `record_attempt`,
+`apply_rubric_status`, `set_conclusions`, `render_campaign`. 44 new unit tests in
+`tests/test_campaign.py`. Two existing document-shape tests updated for the grown
+contract; a legacy file with no campaign keys still loads. `render()` untouched.
+Bug found by a test and fixed: the `best` gate was in `record_attempt`, so an
+unverified better score became the incumbent — it now moves only in
+`apply_rubric_status`, after verification.
+
+**1.1** ✅ Read `src/crow_research/todo.py` end to end before touching it. Note
 `Item.from_dict`, `Todo.set`, `Todo.load`, `Todo.render`, `state_path`,
 `STATES`, `VERDICTS`, and where validation is duplicated between `from_dict`
 and `set`.
 *Verified by:* the duplication is named in the commit message or in a comment,
 not silently re-implemented a third time.
 
-**1.2** Add the campaign dataclasses: `Rubric {id, description, type}`,
+**1.2** ✅ Add the campaign dataclasses: `Rubric {id, description, type}`,
 `Idea {id, title, hypothesis, plan, rubrics, notes, added_by}`,
 `Attempt {idea_id, program, metrics, correct, rubrics, stop_reason, note}`,
 `Best {program, score, attempt}`, `TaskSpec {goal, rubrics, evaluator, program0}`.
@@ -52,55 +62,77 @@ that raises on a bad shape, `to_dict` that round-trips.
 `RUBRIC_TYPES` raises; a non-snake_case rubric id raises; an `Attempt` naming an
 `idea_id` that is not in `ideas` raises.
 
-**1.3** Hang them off `Todo`: `todo.task`, `todo.ideas`, `todo.attempts`,
+**1.3** ✅ Hang them off `Todo`: `todo.task`, `todo.ideas`, `todo.attempts`,
 `todo.best`, `todo.conclusions`. `load` accepts an old file with none of them
 (the 52 existing tests and every live state file must still load); `save` writes
 them; `render` shows them.
 *Verified by:* the full suite still 52+ passed with no change to existing test
 expectations; a new test loads the pre-existing `.crow-research/todo.json` shape.
 
-**1.4** Host-owned scaffold: `Todo.scaffold_rubrics(idea)` returns the
+**1.4** ✅ Host-owned scaffold: `Todo.scaffold_rubrics(idea)` returns the
 `pass: false` / empty-evidence status document the verifier fills in, and
 `Todo.apply_rubric_status(...)` accepts only `pass`, `evidence` and
 `next_recommendation` from an agent, computing `overall_pass` itself.
 *Verified by:* unit test — an agent write that tries to set `overall_pass: true`
 with a failing rubric is corrected by the host, not believed.
 
-**1.5** The `best` gate: `Todo.record_attempt(attempt)` updates `best` only when
+**1.5** ✅ The `best` gate: `Todo.record_attempt(attempt)` updates `best` only when
 `correct` is true and the score is strictly higher. Two independent gates, as in
 their §3.3 — all-rubrics-pass closes the contract, a better correct score moves
 `best`.
 *Verified by:* unit tests for higher/equal/lower/incorrect, and for
 rubric-pass-without-a-better-score.
 
-**1.6** Conclusions validation: one paragraph, no blank lines, <= 300 words, and
+**1.6** ✅ Conclusions validation: one paragraph, no blank lines, <= 300 words, and
 a recorded gate reason from `contradicts | new_category | flips | refines | none`.
 *Verified by:* unit tests for each rejection and for a valid update.
 
-**1.7** Commit. `uv run pytest -q` green, count >= 52.
+**1.7** ✅ Commit. `uv run pytest -q` green — **96 passed** (52 before, 44 new).
 
-## Phase 2 — an executable example task
+## Phase 2 — an executable example task  ✅ DONE (2026-10-15, 111 passed)
 
-**2.1** `examples/tasks/circpack/task.md` — the goal in prose, the rubrics in the
+Evidence: `examples/tasks/circpack/{task.md, evaluate.py, program_0/src/program.py}`
+plus 15 tests in `tests/test_task_circpack.py`. The baseline is a 5 x 6 grid
+trimmed to 26 with one uniform radius by construction (`radius_spread` exactly
+0.0), scoring **2.166666666666666**, `correct: true`. Two bugs the run caught:
+`math.isclose(atol=)` is `abs_tol=`, and float noise made 26 "equal" radii differ
+by 2.8e-17. A test caught a wrong assumption of mine, not a bug in the task:
+`exposes_solution` is an *implementation* rubric and names no evaluator output
+file, so the rubric test is type-aware — metric rubrics must name a file and key
+the evaluator really writes, implementation rubrics must name the interface and be
+evidenced by a run that breaks it.
+
+**2.1** ✅ `examples/tasks/circpack/task.md` — the goal in prose, the rubrics in the
 state-file shape (at least one `metric` and one `implementation` rubric), the
 candidate interface, and how the evaluator is invoked.
 *Verified by:* the rubric ids in `task.md` are exactly the ones `evaluate.py`
-and the state scaffold use.
+and the state scaffold use — `test_task_rubrics_are_a_task_spec_the_state_file_accepts`
+feeds task.md's fence straight into `TaskSpec.from_dict` (so `require_both` is
+exercised on the real bundle), `test_metric_rubrics_name_keys_the_evaluator_writes`
+and `test_the_implementation_rubric_is_evidenced_by_a_run` tie each rubric to a
+key or message a real run produces, and
+`test_beats_program_0_is_a_strict_threshold_at_the_baseline` pins the threshold to
+the executed baseline so the two cannot drift apart.
 
-**2.2** `examples/tasks/circpack/evaluate.py` — deterministic, CPU-only, no
+**2.2** ✅ `examples/tasks/circpack/evaluate.py` — deterministic, CPU-only, no
 network, runs in seconds. Writes `metrics.json` (`combined_score`, plus the
 per-circle detail) and `correct.json` (`correct`, and why not). Overlap or
 out-of-bounds is `correct: false`. Same score as theirs: sum of radii.
-*Verified by:* a test runs it on `program_0` in a tmpdir and asserts
-`correct: true` and `combined_score > 0`; runs it on a deliberately-overlapping
-candidate and asserts `correct: false`; runs it twice and asserts identical
-output.
+*Verified by:* `tests/test_task_circpack.py` runs it as a subprocess on `program_0`
+in a tmpdir and asserts `correct: true` and `combined_score > 0`; runs it on six
+deliberately-bad candidates — overlapping, outside the square, a dishonest
+`sum_of_radii`, 25 circles instead of 26, no `solution()`, and one that raises —
+and asserts each is *recorded* (`correct: false`, exit code 0, the fault named in
+both files) rather than crashing the run; runs it twice and asserts the two files
+are byte-identical. `test_the_evaluator_is_stdlib_only_and_off_the_clock` parses
+its imports and fails if it grows numpy, a socket, or any of the modules a clock
+is built from (`signal`, `threading`, `multiprocessing`, `subprocess`).
 
-**2.3** `examples/tasks/circpack/program_0/` — a grid-placement baseline,
+**2.3** ✅ `examples/tasks/circpack/program_0/` — a grid-placement baseline,
 read-only reference, scores above zero.
-*Verified by:* 2.2's test.
+*Verified by:* 2.2's test — 2.166666666666666, `correct: true`, `num_circles` 26.
 
-**2.4** Commit.
+**2.4** ✅ Commit.
 
 ## Phase 3 — the two new roles
 
@@ -180,7 +212,15 @@ verifier, and computes `overall_pass` and `best` itself afterwards.
 *Verified by:* wire test — the scaffold is in the verifier's dispatch, and a stub
 verifier that lies about `overall_pass` is corrected in the file.
 
-**5.4** Commit.
+**5.4** Conclusions are gated on the wire too: a round that writes an over-long,
+multi-paragraph, or trigger-less `conclusions` is rejected with a notice naming
+the problem, and the loop keeps going. Same shape as 5.2 — a rejection is a
+notice, never a retry counter and never a stop.
+*Verified by:* a stub scripted to write a 400-word conclusions string produces the
+notice, the file still holds the previous conclusions, and the next round is
+dispatched.
+
+**5.5** Commit.
 
 ## Phase 6 — wiring
 

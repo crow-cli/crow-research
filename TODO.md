@@ -47,7 +47,7 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
 
 ## Items
 
-- [ ] **State: the campaign document.** Extend the one JSON contract
+- [x] **State: the campaign document.** (`ddb8e3f`, 96 passed — `campaign.py` + 44 tests; a test caught the `best` gate firing before verification) Extend the one JSON contract
       (`.crow-research/todo.json`) with `task` (goal, rubrics, evaluator,
       program0), `ideas`, `attempts`, `best`, `conclusions`. `items` / `verdict` /
       `verdict_note` unchanged. Host owns ids, `best` and aggregate pass; agents
@@ -105,7 +105,10 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       *Verified by:* `uv run crow-research serve --workflow scientist --help`;
       the orchestrator file spawns all five stubs and the http test still passes.
 
-- [ ] **An executable example task.** `examples/tasks/circpack/` — the same
+- [x] **An executable example task.** (15 tests in `tests/test_task_circpack.py`,
+      111 passed — baseline 2.166666666666666 `correct: true`; six bad candidates
+      each *recorded* rather than raised; two runs byte-identical; task.md's
+      rubrics feed straight into `TaskSpec.from_dict`) `examples/tasks/circpack/` — the same
       benchmark as theirs, so the comparison is apples-to-apples: `task.md`
       (goal + rubrics), `evaluate.py` (deterministic, CPU-only, seconds),
       `program_0/` (a grid-placement baseline that scores above zero).
@@ -114,7 +117,9 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       asserts both, and asserts a deliberately-overlapping candidate scores
       `correct: false`.
 
-- [ ] **Conclusions with an update gate.** One `conclusions` string in the state
+- [ ] **Conclusions with an update gate.** (shape validation done in Phase 1 —
+      `Conclusions.validate`, `GATE_TRIGGERS`, `CONCLUSIONS_MAX_WORDS`, unit-tested;
+      the wire rejection is PLAN 5.4) One `conclusions` string in the state
       file: a single forward-looking paragraph, <= 300 words, rewritten only when
       a round contradicts it, opens a new category, flips a do/don't, or
       meaningfully refines it — and the reason recorded. Not a chronology.
