@@ -5,8 +5,8 @@ return one, so a command line can build a whole cast out of ``--role`` flags and
 hand the orchestrator something to run.
 
 The chain is the vision's shape: a worker does the task, a verifier that never
-saw the work tries to break it, an explorer goes and reads what the rest of the
-world did, a researcher asks what the interesting problem even was. Each step
+saw the work tries to break it, an explorer decides what the next round of work
+is, a researcher asks what the interesting problem even was. Each step
 gets the *previous agent's own report* — not its transcript, not a database row
 — because a report is already the compaction, and asking an agent to summarize
 itself costs a turn to say what it just said. ``compact=`` buys the explicit
@@ -209,15 +209,18 @@ The work is a todo list, and the list is a file: {path}
 
 EXPLORER_PROMPT = """The pipeline is idle: the verifier signed off and the todo list is complete.
 
+What the user asked for: {task}
+
 The todo list is a file: {path}
 
 {todo}
 
 The verifier's last word: {verdict}
 
-{report}Go and find what this work makes possible — the prior art it should have used,
-the gap it leaves, the next thing worth building on top of it. What you find
-goes into that file as new items:
+{report}Decide what happens next. Read the ask above, read what this round landed, and
+work out what the package needs next for that ask to be met — not what would
+make the tree tidier, and not a second opinion on code the verifier already
+passed. What you decide goes into that file as new items:
 
 ```json
 {schema}
@@ -227,7 +230,9 @@ goes into that file as new items:
   with `id` one higher than the highest id in the file, `state` `open`, and
   `added_by` `{me}`.
 * An item is a unit of work one agent can finish in a turn — not a theme, and
-  not a paragraph. Its `text` is the whole of what the worker will be told.
+  not a paragraph. Its `text` is the whole of what the worker will be told, so
+  what "done" looks like goes in it too: a worker should not have to guess what
+  you would accept.
 * If the honest answer is that there is nothing worth adding, add nothing. An
   empty round is a real outcome: the loop waits and asks you again.
 
@@ -444,6 +449,7 @@ def pipeline(
             explorer_result = await turn.run(
                 explorer,
                 EXPLORER_PROMPT.format(
+                    task=turn.prompt.strip() or "(the client sent no task text)",
                     path=path, todo=state.render(), verdict=state.verdict or "UNREPORTED",
                     report=_findings_block(verifier_report), me=explorer.name,
                     schema=STATE_SCHEMA, rules=STATE_RULES,

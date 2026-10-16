@@ -181,6 +181,12 @@ async def test_explorer_additions_reach_the_next_worker_turn() -> None:
     assert counts["Worker"] >= 2, counts
     assert any("Explorer added 1 items" in n for n in notices(client)), notices(client)
     assert "second thing worth doing" in client.text_from("worker")
+    # The explorer's dispatch carries the user's ask. Without it the explorer has
+    # only the todo file and a verdict to go on, and "what happens next" decays
+    # into auditing the code that is already sitting there.
+    asked = client.text_from("explorer")
+    assert "What the user asked for: first thing" in asked, asked[:600]
+    assert "Decide what happens next" in asked, asked[:600]
     # The prompt became item 1 and the explorer's write became item 2. How many
     # rounds ran before the cancel landed is the loop's business, not the test's.
     assert state.items[0].text == "first thing", state.render()

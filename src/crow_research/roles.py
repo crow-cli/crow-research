@@ -84,8 +84,8 @@ EXPLORER = Role(
     name="explorer",
     title="Explorer",
     brief=(
-        "The reports above are what exists in this repository. Your job is what exists "
-        "outside it: the prior art this work should have used, and the gap it leaves."
+        "The reports above are what this round produced. Your job is the next one: what "
+        "the user asked for, and what this package needs next to deliver it."
     ),
 )
 #: No agent file yet — cast it against an endpoint of your own

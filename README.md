@@ -108,13 +108,13 @@ character, inserts the ones that are new, and preserves `template_args`
 |---|---|---|---|---|
 | `worker_agent.py` | `ROLE` | `REPORT`, after `IMPORTANT` | 20 of 21 | 19219 → 21179 |
 | `verifier_agent.py` | `ROLE`, `PROBLEM_SOLVING_WORKFLOW`, `FILE_SYSTEM_GUIDELINES`, `CODE_QUALITY`, `VERSION_CONTROL` | `VERDICT` | 16 of 21 | → 18607 |
-| `explorer_agent.py` | `ROLE`, `PROBLEM_SOLVING_WORKFLOW`, `FILE_SYSTEM_GUIDELINES`, `EXTERNAL_SERVICES` | `FINDINGS` | 17 of 21 | → 20006 |
+| `explorer_agent.py` | `ROLE`, `PROBLEM_SOLVING_WORKFLOW`, `FILE_SYSTEM_GUIDELINES`, `EXTERNAL_SERVICES` | `FINDINGS` | 17 of 21 | → 20105 |
 
 `patch_section` raises `KeyError` when the section it was asked to patch is not
 there, so a rename upstream fails loudly instead of quietly producing a generic
 agent. The worker commits before it reports; the verifier is read-only and never
-fixes anything; the explorer searches the web first and clones prior art into
-`/tmp/explore-*`.
+fixes anything; the explorer reads the goal and the state file and writes the
+next round's items, with the state file its only write inside the repo.
 
 Each agent is **one file a client spawns** — how you run that file *is* the ACP
 server configuration. Every one of them takes `--model`, `--http --host --port`,
@@ -327,7 +327,9 @@ served on a socket, stub agents spawned by it in turn, no model anywhere:
   nothing to claim. The file is asserted afterwards too: it is the only thing a
   restarted run would read.
 * **explorer additions** — the items the explorer appends to the file land on the
-  list and reach the next worker prompt.
+  list and reach the next worker prompt, and the explorer's own dispatch carries
+  the user's ask: an explorer told only the verdict and the file has no goal to
+  aim the next round at.
 * **resume** — a file left behind by a cancelled run, with the work done and no
   verdict on it, sends the loop straight to the verifier: no seeding notice, no
   worker turn, and the verifier is told there is no report rather than handed a
