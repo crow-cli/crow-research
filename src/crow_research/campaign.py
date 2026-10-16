@@ -216,10 +216,16 @@ class Attempt:
     which is what makes it the host's. An agent that writes ``true`` over a
     failing rubric has not changed the record, only the file, and the next load
     puts it right.
+
+    ``idea_id`` is ``None`` when no idea was under test — the first round works
+    on the item the client typed, before the explorer has proposed anything, and
+    the rubrics it is graded on are the campaign's own ``task.rubrics``. An
+    attempt with no idea is still evidence: it is the baseline the ideas have to
+    beat.
     """
 
     id: int
-    idea_id: int
+    idea_id: Optional[int]
     program: str
     metrics: dict[str, Any]
     correct: bool
@@ -255,10 +261,12 @@ class Attempt:
     @classmethod
     def from_dict(cls, doc: Any) -> Attempt:
         _require(isinstance(doc, dict), f"an attempt is a JSON object, got {type(doc).__name__}")
-        for key in ("id", "idea_id"):
-            value = doc.get(key)
-            _require(isinstance(value, int) and not isinstance(value, bool),
-                     f"an attempt's {key} is an integer, got {value!r}")
+        aid = doc.get("id")
+        _require(isinstance(aid, int) and not isinstance(aid, bool),
+                 f"an attempt's id is an integer, got {aid!r}")
+        idea_id = doc.get("idea_id")
+        _require(idea_id is None or (isinstance(idea_id, int) and not isinstance(idea_id, bool)),
+                 f"an attempt's idea_id is an integer or null, got {idea_id!r}")
         program = doc.get("program")
         _require(isinstance(program, str) and bool(program.strip()),
                  f"attempt {doc.get('id')} has no program")
@@ -281,7 +289,7 @@ class Attempt:
         for name in ("note", "next_recommendation"):
             _require(isinstance(doc.get(name, ""), str),
                      f"attempt {doc['id']}'s {name} is a string")
-        return cls(id=doc["id"], idea_id=doc["idea_id"], program=program.strip(), metrics=metrics,
+        return cls(id=doc["id"], idea_id=idea_id, program=program.strip(), metrics=metrics,
                    correct=correct, rubrics=statuses, stop_reason=stop_reason,
                    note=doc.get("note", "").strip(),
                    next_recommendation=doc.get("next_recommendation", "").strip())

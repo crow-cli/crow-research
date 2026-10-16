@@ -154,6 +154,27 @@ def test_the_scaffold_block_is_absent_until_there_is_an_attempt():
     assert '"id": "a_b"' in _scaffold_block(state)
 
 
+def test_round_one_prompts_say_the_attempt_tests_no_idea():
+    """The first round runs before the explorer has written anything, so the
+    worker is told to record `idea_id` null and the verifier is told whose
+    rubrics it is judging. A prompt that only shows the idea case is how a
+    worker's first record gets refused on load."""
+    state = Todo(task=TASK)
+    state.add("run the campaign", by="prompt")
+    experiment = _experiment_block(state)
+    assert "no idea yet" in experiment
+    assert "`idea_id` null" in experiment
+    assert "the task's own rubrics" in experiment
+    state.record_attempt(None, "program_1/src/program.py", {"combined_score": 2.6},
+                         True, "rubric_pass")
+    scaffold = _scaffold_block(state)
+    assert "No idea was under test, so the drafter" in scaffold
+    assert '"id": "correct_packing"' in scaffold
+    assert "`null` when the round tested no idea" in STATE_RULES
+    # And the same block still names the explorer once there is an idea.
+    assert "The explorer" in _scaffold_block(campaign_todo())
+
+
 # --- the schema shown to agents is the document the host writes -------------
 
 

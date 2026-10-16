@@ -319,7 +319,7 @@ class Todo:
                 highest = max(highest, int(match.group(1)))
         return highest + 1
 
-    def record_attempt(self, idea_id: int, program: str, metrics: dict[str, Any],
+    def record_attempt(self, idea_id: Optional[int], program: str, metrics: dict[str, Any],
                        correct: bool, stop_reason: str, *, note: str = "") -> Attempt:
         """Record one evaluation and apply the ``best`` gate.
 
@@ -335,13 +335,18 @@ class Todo:
         is where ``best`` moves. The worker reports what the evaluator measured,
         the verifier judges it, and the two writers never share a field.
         """
-        idea = self.idea(idea_id)
-        if idea is None:
-            raise ValueError(f"attempt tests idea {idea_id}, which is not in 'ideas'")
+        if idea_id is None:
+            scaffold = ([{"id": r.id, "pass": False, "evidence": ""} for r in self.task.rubrics]
+                        if self.task is not None else [])
+        else:
+            idea = self.idea(idea_id)
+            if idea is None:
+                raise ValueError(f"attempt tests idea {idea_id}, which is not in 'ideas'")
+            scaffold = self.scaffold_rubrics(idea)
         attempt = Attempt.from_dict({
             "id": next(self._attempt_ids), "idea_id": idea_id, "program": program,
             "metrics": metrics, "correct": correct,
-            "rubrics": self.scaffold_rubrics(idea), "stop_reason": stop_reason, "note": note,
+            "rubrics": scaffold, "stop_reason": stop_reason, "note": note,
         })
         self.attempts.append(attempt)
         return attempt
@@ -408,11 +413,25 @@ class Todo:
             self._consider_best(attempt)
         return self.best
 
+    def _expected_rubric_ids(self, attempt: Attempt) -> Optional[list[str]]:
+        """The rubric ids an attempt is graded on, or ``None`` if unknowable.
+
+        An attempt that tests an idea is graded on that idea's rubrics. An
+        attempt with no idea — the first round, before the explorer has proposed
+        anything — is graded on the campaign's own ``task.rubrics``, which is the
+        contract the drafter wrote and the brief the client typed.
+        """
+        if attempt.idea_id is None:
+            return [r.id for r in self.task.rubrics] if self.task is not None else None
+        idea = self.idea(attempt.idea_id)
+        return [r.id for r in idea.rubrics] if idea is not None else None
+
     def repair_scaffolds(self) -> list[str]:
-        """Put every attempt's rubric *ids* back to the ids its idea named.
+        """Put every attempt's rubric *ids* back to the ids it is graded on.
 
         Called before the verifier is dispatched, so the scaffold it fills is the
-        scaffold the explorer wrote: a rubric the worker left out comes back as
+        scaffold the explorer wrote — or, for an attempt with no idea, the
+        scaffold the drafter wrote: a rubric the worker left out comes back as
         ``pass`` false with empty evidence, and one it invented is dropped — an
         invented criterion is how a round starts being graded on something nobody
         proposed. Statuses whose id does match are left alone, because the values
@@ -422,10 +441,9 @@ class Todo:
         """
         lines: list[str] = []
         for index, attempt in enumerate(self.attempts):
-            idea = self.idea(attempt.idea_id)
-            if idea is None:
+            expected = self._expected_rubric_ids(attempt)
+            if expected is None:
                 continue
-            expected = [r.id for r in idea.rubrics]
             if [r.id for r in attempt.rubrics] == expected:
                 continue
             filled = {r.id: r for r in attempt.rubrics}
@@ -506,7 +524,8 @@ class Todo:
                 passed = sum(1 for r in a.rubrics if r.passed)
                 score = a.score
                 lines.append(
-                    f"- {a.program} (idea {a.idea_id}, attempt {a.id}): "
+                    f"- {a.program} (idea {'none' if a.idea_id is None else a.idea_id}, "
+                    f"attempt {a.id}): "
                     f"combined_score {'n/a' if score is None else score}, "
                     f"correct {str(a.correct).lower()}, rubrics {passed}/{len(a.rubrics)}, "
                     f"stopped {a.stop_reason}"
@@ -572,10 +591,15 @@ class Todo:
         attempts = _each(doc.get("attempts", []), "attempts", Attempt.from_dict)
         known = {idea.id for idea in ideas}
         for attempt in attempts:
+            # ``idea_id`` None is the first round: the item the client typed,
+            # graded on the campaign's own rubrics, before the explorer has
+            # proposed anything. It is the baseline the ideas have to beat.
+            if attempt.idea_id is None:
+                continue
             if attempt.idea_id not in known:
                 raise ValueError(
                     f"attempt {attempt.id} tests idea {attempt.idea_id}, which is not in 'ideas' "
-                    f"— an attempt without an idea is evidence for nothing"
+                    f"— an attempt names an idea that was never proposed"
                 )
         raw_best = doc.get("best")
         best = Best.from_dict(raw_best) if raw_best is not None else None

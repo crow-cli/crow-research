@@ -191,6 +191,10 @@ STATE_RULES = """\
   drafter's, written once. `ideas` and `conclusions` are the explorer's.
   `attempts` are the worker's — except that inside an attempt, `pass`, `evidence`
   and `next_recommendation` are the verifier's, and nothing else in it is.
+* An attempt's `idea_id` is `null` when the round tested no idea, and the first
+  round never has one, because the explorer writes `ideas` after the worker has
+  run. Such an attempt is graded on the task's own rubrics and is not second-class
+  evidence: it is the incumbent the ideas have to beat.
 * `best` and every `overall_pass` are the host's. They are computed from what you
   wrote, after you wrote it, so a value you put there yourself is discarded.
   Claiming one is a way of saying nothing.
@@ -416,7 +420,8 @@ has a fixed shape:
   exploratory runs outside the official evaluation. A number that did not come
   from the evaluator is a number the verifier cannot reproduce, and a score
   nobody can reproduce cannot be banked.
-* Record the attempt in `attempts`: `idea_id`; `program`, the path you wrote;
+* Record the attempt in `attempts`: `idea_id`, the id of the idea you tested or
+  `null` when there was none; `program`, the path you wrote;
   `metrics` and `correct`, copied verbatim out of the evaluator's `metrics.json`
   and `correct.json`; `stop_reason` — `rubric_pass` when it ran and the rubrics
   look satisfied, `evaluation_failed` when the evaluator refused it, `stopped`
@@ -435,7 +440,9 @@ def _experiment_block(state: Todo) -> str:
     idea = state.latest_idea()
     return EXPERIMENT.format(
         idea=(f"idea {idea.id} — {idea.title}" if idea
-              else "no idea yet, because the explorer has not written one; do the item as stated and say so in your report"),
+              else "no idea yet, because the explorer has not written one; do the item as stated, "
+                   "grade it against the task's own rubrics, and record the attempt with "
+                   "`idea_id` null"),
         index=state.next_program_index(),
         evaluator=state.task.evaluator,
     )
@@ -446,7 +453,7 @@ def _experiment_block(state: Todo) -> str:
 #: which fields it is allowed to fill.
 SCAFFOLD = """
 
-This round produced attempt {attempt}, and that attempt has rubrics. The explorer
+This round produced attempt {attempt}, and that attempt has rubrics. {author}
 wrote them before the program existed and the host has already scaffolded them
 into the file as `pass` false with empty evidence:
 
@@ -476,6 +483,8 @@ def _scaffold_block(state: Todo) -> str:
     attempt = state.attempts[-1]
     return SCAFFOLD.format(
         attempt=attempt.id,
+        author=("The explorer" if attempt.idea_id is not None
+                else "No idea was under test, so the drafter"),
         scaffold=json.dumps([r.to_dict() for r in attempt.rubrics], indent=2),
     )
 

@@ -142,8 +142,25 @@ def test_an_attempt_cannot_score_the_same_rubric_twice() -> None:
 
 
 def test_an_attempt_for_an_unknown_idea_is_refused_on_load() -> None:
-    raises("an attempt without an idea is evidence for nothing", Todo.from_dict,
+    raises("an attempt names an idea that was never proposed", Todo.from_dict,
            {"items": [], "ideas": [idea_doc()], "attempts": [attempt_doc(idea_id=9)]})
+
+
+def test_an_attempt_with_no_idea_loads() -> None:
+    """The first round tests no idea, because the explorer has not written one."""
+    attempt = Attempt.from_dict(attempt_doc(idea_id=None))
+    assert attempt.idea_id is None
+    assert attempt.overall_pass and attempt.score == 2.71
+    todo = Todo.from_dict({"items": [], "ideas": [], "attempts": [attempt_doc(idea_id=None)]})
+    assert [a.idea_id for a in todo.attempts] == [None]
+    assert json.loads(json.dumps(todo.to_dict()))["attempts"][0]["idea_id"] is None
+
+
+def test_an_attempts_idea_id_is_an_integer_or_null() -> None:
+    raises("an attempt's idea_id is an integer or null", Attempt.from_dict,
+           attempt_doc(idea_id="1"))
+    raises("an attempt's idea_id is an integer or null", Attempt.from_dict,
+           attempt_doc(idea_id=True))
 
 
 def test_a_conclusions_paragraph_over_the_limit_is_refused() -> None:
@@ -215,6 +232,64 @@ def test_recording_an_attempt_scaffolds_its_rubrics_from_the_idea() -> None:
 
 def test_recording_an_attempt_for_an_unknown_idea_is_refused() -> None:
     raises("which is not in 'ideas'", Todo().record_attempt, 4, "program_1", {}, True, "stopped")
+
+
+def _task_only() -> Todo:
+    """Round 1: a drafted task, and no ideas, because the explorer has not run."""
+    todo = Todo()
+    todo.task = TaskSpec(goal="pack them", rubrics=(METRIC, IMPL),
+                         evaluator="evaluate.py", program0="program_0")
+    return todo
+
+
+def test_recording_an_idealess_attempt_scaffolds_from_the_task() -> None:
+    todo = _task_only()
+    attempt = todo.record_attempt(None, "program_1", {"combined_score": 2.6}, True, "rubric_pass")
+    assert attempt.idea_id is None
+    assert [r.to_dict() for r in attempt.rubrics] == [
+        {"id": "score_threshold", "pass": False, "evidence": ""},
+        {"id": "uses_restarts", "pass": False, "evidence": ""},
+    ]
+    assert attempt.overall_pass is False
+
+
+def test_recording_an_idealess_attempt_with_no_task_has_no_scaffold() -> None:
+    attempt = Todo().record_attempt(None, "program_1", {}, True, "stopped")
+    assert attempt.rubrics == ()
+
+
+def test_an_idealess_attempt_is_held_to_the_tasks_rubrics() -> None:
+    todo = _task_only()
+    attempt = todo.record_attempt(None, "program_1", {"combined_score": 2.6}, True, "rubric_pass")
+    todo.attempts[0] = Attempt.from_dict(attempt.to_dict() | {"rubrics": [
+        {"id": "uses_restarts", "pass": True, "evidence": "line 40"},
+        {"id": "tasteful_naming", "pass": True, "evidence": "looks nice"},
+    ]})
+    lines = todo.repair_scaffolds()
+    assert lines == ["attempt 1 scaffolded with 2 rubrics, dropped tasteful_naming"]
+    assert [r.id for r in todo.attempts[0].rubrics] == ["score_threshold", "uses_restarts"]
+    # The verifier's judgment on an id that survives is left alone.
+    assert todo.attempts[0].rubrics[1].passed is True
+    assert todo.attempts[0].rubrics[0].passed is False
+
+
+def test_the_best_gate_fires_for_an_idealess_attempt() -> None:
+    """Round 1 banks the incumbent the ideas have to beat."""
+    todo = _task_only()
+    attempt = todo.record_attempt(None, "program_1", {"combined_score": 2.6}, True, "rubric_pass")
+    assert todo.best is None
+    todo.apply_rubric_status(attempt.id, [
+        {"id": "score_threshold", "pass": True, "evidence": "2.6"},
+        {"id": "uses_restarts", "pass": True, "evidence": "line 40"},
+    ])
+    assert todo.best == Best(program="program_1", score=2.6, attempt_id=attempt.id)
+    assert todo.recompute_best() == todo.best
+
+
+def test_render_campaign_says_when_an_attempt_tested_no_idea() -> None:
+    todo = _task_only()
+    todo.record_attempt(None, "program_1", {"combined_score": 2.6}, True, "rubric_pass")
+    assert "(idea none, attempt 1)" in todo.render_campaign()
 
 
 def test_the_verifier_fills_pass_and_evidence_and_nothing_else() -> None:
