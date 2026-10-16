@@ -599,12 +599,15 @@ async def _reload(turn: Turn, path: Path, before: Todo) -> tuple[Todo, list[str]
     try:
         after = Todo.load(path)
     except ValueError as error:
+        # Restored before it is announced, so the notice is true when read: an
+        # observer that acts on "the last good copy is back in place" is acting
+        # on the file as it now is, not as it is about to be.
+        before.save(path)
         await turn.notice(
             f"{path.name} does not parse — {error}",
             severity="error",
             description="the last good copy is back in place; that agent's write is lost",
         )
-        before.save(path)
         return Todo.from_dict(before.to_dict()), []
     return after, _changes(before, after)
 
@@ -671,9 +674,10 @@ def _loop(
             turn._check()
             if announce:
                 await turn.notice(
-                    f"{drafter.label} drafting the task",
-                    description="the state file has no task specification, so there is "
-                                "no evaluator, no baseline and nothing to score",
+                    drafter.label,
+                    description="drafting the task — the state file has no task "
+                                "specification, so there is no evaluator, no baseline "
+                                "and nothing to score",
                 )
             drafter_result = await turn.run(
                 drafter,

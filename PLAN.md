@@ -252,7 +252,7 @@ the write does not parse and the round is thrown away.
 
 **4.5** ✅ Commit.
 
-## Phase 5 — the `scientist` workflow  ✅ CODE DONE (2026-10-15, 160 passed)
+## Phase 5 — the `scientist` workflow  ✅ DONE (2026-10-15, 167 passed)
 
 Evidence: `pipeline`'s body moved wholesale into a private
 `_loop(worker, verifier, explorer, todo, *, max_review, announce, state_path,
@@ -273,8 +273,8 @@ it corrects an incumbent an agent wrote) and `repair_scaffolds()` (puts each
 attempt's rubric *ids* back to its idea's, returning the missing ones as
 `pass: false` with empty evidence and dropping invented ones; the *values* stay
 the verifier's). 10 new tests in `tests/test_campaign.py`, 54 in that file.
-5.2/5.3/5.4 are host-side landed and unit-tested; their stated *Verified by* is
-a wire test, which is Phase 7's file.
+5.2/5.3/5.4 are unit-tested here and wire-tested in `tests/test_scientist.py`
+(Phase 7), which is where their stated *Verified by* lives.
 
 **5.1** ✅ `workflows.scientist(drafter, worker, verifier, explorer, writer, todo, *,
 announce=True, state_path=None) -> Workflow`. Drafter dispatched once, only when
@@ -284,24 +284,29 @@ dispatched to publish what the campaign has — and the round continues anyway.
 *Verified by:* the function is exported from `crow_research`; its docstring says
 plainly that nothing in it is on a clock.
 
-**5.2** (host side landed in `_loop` and unit-tested; the wire test below is
-PLAN 7.1) A rejected idea is a notice, not a retry counter: the orchestrator
+**5.2** ✅ (host side in `_loop`; wire test
+`test_a_rejected_idea_is_a_notice_and_the_round_after_it_still_happens`)
+A rejected idea is a notice, not a retry counter: the orchestrator
 validates what the explorer wrote, and on failure emits a notice naming the
 problem and lets the next round ask again.
 *Verified by:* a stub explorer scripted to write a rubric with a bad `type`
 produces the notice and the loop keeps going.
 
-**5.3** (host side landed in `_loop` — `repair_scaffolds` before the dispatch,
-`recompute_best` after the reload — and unit-tested; the wire test below is
-PLAN 7.1/7.3) The orchestrator pre-creates the rubric scaffold before dispatching the
+**5.3** ✅ (host side in `_loop` — `repair_scaffolds` before the dispatch,
+`recompute_best` after the reload; wire tests
+`test_the_scaffold_is_repaired_and_the_aggregates_are_not_believed` and
+`test_the_best_gate_banks_the_number_the_evaluator_wrote`)
+The orchestrator pre-creates the rubric scaffold before dispatching the
 verifier, and computes `overall_pass` and `best` itself afterwards.
 *Verified by:* wire test — the scaffold is in the verifier's dispatch, and a stub
 verifier that lies about `overall_pass` is corrected in the file.
 
-**5.4** (host side landed: `Conclusions.validate` runs in the loader, so an
-over-long paragraph is a document that does not parse, which `_reload` turns into
-an error notice plus the last good copy restored; the wire test below is
-PLAN 7.1) Conclusions are gated on the wire too: a round that writes an over-long,
+**5.4** ✅ (`Conclusions.validate` runs in the loader, so an over-long paragraph
+is a document that does not parse, which `_reload` turns into an error notice
+plus the last good copy restored — restore now happens *before* the notice, so
+the notice is true when read; wire test
+`test_an_over_long_conclusions_is_refused_and_the_paragraph_survives`)
+Conclusions are gated on the wire too: a round that writes an over-long,
 multi-paragraph, or trigger-less `conclusions` is rejected with a notice naming
 the problem, and the loop keeps going. Same shape as 5.2 — a rejection is a
 notice, never a retry counter and never a stop.
@@ -342,23 +347,70 @@ construction with all five roles pointed at the stub.
 
 **6.3** ✅ Commit.
 
-## Phase 7 — tests over the real wire
+## Phase 7 — tests over the real wire  ✅ DONE (2026-10-15, 167 passed)
 
-**7.1** `tests/test_scientist.py`: the stub cast driven through
+Evidence: `tests/test_scientist.py`, 7 tests, all of them driving the five stubs
+through `crow-research serve --workflow scientist` as a spawned child — the same
+real wire `test_pipeline.py` uses (stdio pipes; `test_http.py` already holds the
+socket variant of this loop to the same contract, and a second socket test would
+be testing hypercorn twice). `serve_scientist(cwd)` builds the argv, `campaign(cwd,
+scripts)` builds the peer with the stubs' shared env, and `seeded_campaign(cwd, *,
+idea, done)` writes a file that already has a task on it. `DISPATCH` is this
+cast's own regex — the drafter's notice carries no round number, because it is not
+part of a round — and `test_pipeline.dispatches` grew a `pattern` parameter so the
+counting is shared rather than copied.
+
+Six mutations, each confirmed to fail the test that exists for it: no writer turn,
+no `recompute_best`, no `repair_scaffolds`, an unconditional drafter, no
+`_experiment_block`, and an unconditional writer.
+
+Two things the tests forced out of the product, both worth keeping:
+
+* `_reload` restored the last good copy *after* announcing that it had. The
+  notice says "the last good copy is back in place", so an observer acting on it
+  was acting on a file that had not been written yet. Save, then announce.
+* A rejection test cannot read the file after the run. The explorer writes the
+  same bad document every round, so the only moment the file holds the host's
+  restored copy is the moment a write is refused — the two rejection tests read it
+  inside the predicate, with `STUB_DELAY` widening the window past the poll.
+
+**7.1** ✅ `tests/test_scientist.py`: the stub cast driven through
 `workflows.scientist` over a real socket. Assert the dispatch order
 `Drafter → Worker → Verifier → Explorer → Writer`, the role stamps in `_meta`,
 the notices, `stop_reason == "cancelled"`, and the state file afterwards.
 *Verified by:* the test passes; it fails if any role is dispatched out of order.
+`test_the_campaign_casts_five_roles_in_order_and_never_stops` asserts
+`roles_in_order() == list(CAST)` off the `_meta` stamps, counts one Drafter /
+Worker / Verifier and >= 2 Explorers off the notices, and waits for round 2's
+explorer precisely because that is what proves round 1's writer finished.
 
-**7.2** A resume test: a file with a `task`, a signed-off verdict and a complete
+**7.2** ✅ A resume test: a file with a `task`, a signed-off verdict and a complete
 list goes straight to the explorer, with no drafter turn.
-*Verified by:* the test passes and asserts `Drafter` was never dispatched.
+*Verified by:* the test passes and asserts `Drafter` was never dispatched —
+`test_a_resumed_campaign_never_dispatches_the_drafter`, which also asserts the
+Worker and the Verifier were not, and that nothing was seeded.
 
-**7.3** The example task's evaluator is exercised by a real worker-shaped stub
+**7.3** ✅ The example task's evaluator is exercised by a real worker-shaped stub
 that writes an attempt, and the host's `best` gate is asserted from the file.
-*Verified by:* the test passes.
+*Verified by:* the test passes. `test_the_best_gate_banks_the_number_the_evaluator_wrote`
+writes a real candidate, runs the real `evaluate.py` on it as a subprocess twice
+(the candidate and the baseline), and hands the worker stub the bytes
+`metrics.json` held; the file afterwards holds `Best(program_1, <the evaluator's
+own float>, 1)` and the stream carries `best (none) -> program_1 (…)`. The same
+test asserts the worker's dispatch named the idea, the next free `program_<idx>`
+and the evaluator.
 
-**7.4** Commit. Full suite green, count recorded in README.
+**7.4** ✅ Commit. Full suite green — **167 passed** — count recorded in README.
+
+Also closed here, because their *Verified by* was a wire test in this file:
+**5.2** (`test_a_rejected_idea_is_a_notice_and_the_round_after_it_still_happens`),
+**5.3** (`test_the_scaffold_is_repaired_and_the_aggregates_are_not_believed` — a
+worker that leaves a rubric out and invents one, a verifier that asserts
+`overall_pass: true` over a rubric it just failed and writes an incumbent of its
+own, and the host taking both back with a notice), **5.4**
+(`test_an_over_long_conclusions_is_refused_and_the_paragraph_survives`), plus the
+explorer-contract handover
+(`test_an_idea_the_explorer_writes_lands_in_the_file_and_reaches_the_worker`).
 
 ## Phase 8 — docs
 

@@ -130,7 +130,7 @@ own list, which wins. An explicit empty list means "no tools".
 
 ```sh
 uv sync
-uv run pytest -q        # 52 tests; 8 of them end-to-end over the real wire, no model
+uv run pytest -q        # 167 tests; 18 of them end-to-end over the real wire, no model
 ```
 
 The client is `repl_client.py`, a v2 port of crow's

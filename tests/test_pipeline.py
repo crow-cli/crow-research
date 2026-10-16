@@ -55,14 +55,18 @@ def serve_pipeline(cwd: str) -> list[str]:
 DISPATCH = re.compile(r"^round \d+ · (Worker|Verifier|Explorer)$")
 
 
-def dispatches(client: Recorder) -> dict[str, int]:
+def dispatches(client: Recorder, pattern: re.Pattern[str] = DISPATCH) -> dict[str, int]:
     """How many times each role was dispatched, counted off the transition
-    notices — the same signal the upstream UI renders."""
+    notices — the same signal the upstream UI renders.
+
+    ``pattern`` is what a cast with more seats passes: the shape is the loop's,
+    the roles in it are the workflow's.
+    """
     counts: dict[str, int] = {}
     for kind, update, _meta in client.events:
         if kind != "notice":
             continue
-        matched = DISPATCH.match(getattr(update, "title", "") or "")
+        matched = pattern.match(getattr(update, "title", "") or "")
         if matched:
             counts[matched.group(1)] = counts.get(matched.group(1), 0) + 1
     return counts

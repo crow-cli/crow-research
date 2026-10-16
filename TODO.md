@@ -66,10 +66,12 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       sections of crow's 21-section prompt (assert the char count and that
       `patch_section` did not raise); `--help` works; stdio and `--http` both serve.
 
-- [ ] **Explorer contract: idea bundle + target rubrics.** (prompts done in
-      Phase 4 — ROLE/FINDINGS carry the idea contract and the no-execution rule,
-      `EXPLORER_PROMPT` grows `{campaign}` + `_idea_contract_block`; the wire test
-      below is PLAN 7.1) The explorer already
+- [x] **Explorer contract: idea bundle + target rubrics.** (prompts in Phase 4 —
+      ROLE/FINDINGS carry the idea contract and the no-execution rule,
+      `EXPLORER_PROMPT` grows `{campaign}` + `_idea_contract_block`; wire tests in
+      Phase 7 — `test_an_idea_the_explorer_writes_lands_in_the_file_and_reaches_the_worker`
+      and `test_a_rejected_idea_is_a_notice_and_the_round_after_it_still_happens`,
+      167 passed) The explorer already
       decides the next round (commit `be16d27`). It now also writes an `idea` —
       title, falsifiable hypothesis, ordered plan, and the `target_rubrics` the
       verifier will check — and its items carry those rubrics. Read-only in the
@@ -78,11 +80,13 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       an idea + rubrics; the wire test asserts they land in the file and reach the
       verifier's dispatch prompt.
 
-- [ ] **Worker contract: execute against the evaluator.** (prompts done in
-      Phase 4 — ROLE/REPORT carry the experiment contract and an ATTEMPT section,
+- [x] **Worker contract: execute against the evaluator.** (prompts in Phase 4 —
+      ROLE/REPORT carry the experiment contract and an ATTEMPT section,
       `WORKER_PROMPT` grows `{campaign}` + `_experiment_block` naming the next free
-      index and the evaluator; the gate itself is unit-tested in `test_campaign.py`
-      and its wire test is PLAN 7.3) Append-only
+      index and the evaluator; the gate is unit-tested in `test_campaign.py` and
+      wire-tested by `test_the_best_gate_banks_the_number_the_evaluator_wrote`,
+      which runs the real `evaluate.py` and asserts the dispatch named the idea,
+      the index and the evaluator) Append-only
       `program_<idx>`, never overwrite; run the task's evaluator; write
       `metrics`, `correct`, and rubric evidence into an `attempt`. Two
       independent gates, as in the paper: all-rubrics-pass closes the contract,
@@ -91,11 +95,14 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       only when the score is strictly higher and `correct` is true; unit test on
       the gate, wire test on the dispatch.
 
-- [ ] **Verifier contract: check the rubrics it was given.** (prompts done in
-      Phase 4 — ROLE/VERDICT carry the scaffold contract and a RUBRICS section,
-      `VERIFIER_PROMPT` grows `{campaign}` + `_scaffold_block` showing the
-      pre-created statuses; the orchestrator pre-creating them is PLAN 5.3 and the
-      wire test is PLAN 7.1) The orchestrator
+- [x] **Verifier contract: check the rubrics it was given.** (prompts in Phase 4 —
+      ROLE/VERDICT carry the scaffold contract and a RUBRICS section,
+      `VERIFIER_PROMPT` grows `{campaign}` + `_scaffold_block`; the orchestrator
+      pre-creates and repairs them in Phase 5, and
+      `test_the_scaffold_is_repaired_and_the_aggregates_are_not_believed` asserts
+      the scaffold in the dispatch, the invented rubric dropped, and a verifier
+      that lied about `overall_pass` and wrote its own `best` corrected in the
+      file) The orchestrator
       pre-creates the rubric scaffold (`pass: false`, empty evidence) before the
       verifier is dispatched; the verifier fills only `pass`, `evidence` and
       `next_recommendation`. It does not invent criteria and does not edit.
@@ -103,10 +110,12 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       scaffold and the explorer's rubric ids; a stub verifier filling two of three
       rubrics yields `overall_pass: false` computed by the host, not the agent.
 
-- [ ] **Workflow: `scientist`.** (code done in Phase 5 — `_loop` is the one loop
-      and `pipeline`/`scientist` are its two doors, `recompute_best` +
-      `repair_scaffolds` are the host-side gates, 160 passed; the wire test below
-      is PLAN 7.1) drafter once when there is no task spec, then the
+- [x] **Workflow: `scientist`.** (Phase 5 — `_loop` is the one loop and
+      `pipeline`/`scientist` are its two doors, `recompute_best` +
+      `repair_scaffolds` are the host-side gates; Phase 7 —
+      `test_the_campaign_casts_five_roles_in_order_and_never_stops` asserts the
+      order off the `_meta` stamps and the loop still going at the cancel,
+      mutation-checked six ways, 167 passed) drafter once when there is no task spec, then the
       existing perpetual worker → verifier → explorer loop, then the writer when a
       signed-off round's explorer adds nothing (an idle campaign publishes what it
       has), then round again. No clocks, no caps, no retry counters. A rejected
@@ -136,9 +145,11 @@ phases-as-subprocesses. Their loop ends by budget; ours ends when the user ends 
       asserts both, and asserts a deliberately-overlapping candidate scores
       `correct: false`.
 
-- [ ] **Conclusions with an update gate.** (shape validation done in Phase 1 —
-      `Conclusions.validate`, `GATE_TRIGGERS`, `CONCLUSIONS_MAX_WORDS`, unit-tested;
-      the wire rejection is PLAN 5.4) One `conclusions` string in the state
+- [x] **Conclusions with an update gate.** (shape validation in Phase 1 —
+      `Conclusions.validate`, `GATE_TRIGGERS`, `CONCLUSIONS_MAX_WORDS`; the wire
+      rejection is `test_an_over_long_conclusions_is_refused_and_the_paragraph_survives`,
+      which reads the file at the refusal and finds the previous paragraph still
+      there) One `conclusions` string in the state
       file: a single forward-looking paragraph, <= 300 words, rewritten only when
       a round contradicts it, opens a new category, flips a do/don't, or
       meaningfully refines it — and the reason recorded. Not a chronology.
