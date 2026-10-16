@@ -114,11 +114,13 @@ writing. Its agents are *skill sets* —
 `src/investigation/skill_scope.py::SKILLS_BY_STEP` maps a step name to the
 handful of skills that step may use, `idea` getting `create-idea` and
 `memory-log`, `run` getting `edit-program`, `evaluate-program`, `verify-rubrics`
-— rendered into a per-run config directory by 1200-line bash scripts that exec a
-headless CLI inside Docker. There is no protocol between the pieces. Here there
-is only the protocol: every role is an ACP v2 agent, every handoff is a
-`session/prompt`, every artifact is a `session/update` on one stream, and the
-shared memory is a file rather than a workspace somebody staged.
+— rendered into a per-run config directory (`.claude`, `.codex`, …) and exec'd
+as a headless CLI, optionally `--containerize`d. The orchestration is 24 bash
+scripts totalling 22,906 lines, `paper_edit.sh` alone being 4,552 of them.
+There is no protocol between the pieces. Here there is only the protocol: every
+role is an ACP v2 agent, every handoff is a `session/prompt`, every artifact is a
+`session/update` on one stream, and the shared memory is a file rather than a
+workspace somebody staged.
 
 | their step | their agent | ours | why it moved |
 |---|---|---|---|
@@ -171,24 +173,43 @@ shared memory is a file rather than a workspace somebody staged.
   Nothing here is on a clock: a turn ends when the child ends it and the loop
   ends when the client cancels it. `STOP_REASONS` is
   `(rubric_pass, evaluation_failed, stopped)` and there is no `cap_reached`,
-  because there is no cap to reach. A budget is somebody else's decision about
-  how long this experiment deserves; a deterministic evaluator and a cancellable
-  run are enough, and the circpack evaluator bans `signal`, `threading`,
-  `subprocess` and `socket` from *itself* by name — a clock in the evaluator
-  would be the evaluator deciding how long a scientist is allowed to think.
-* **Hydra override composition.** Their per-run config directory is a composition
-  of task, worker count, skill scope and budget. Ours is one JSON file, `indent=2`
-  with every key always present, that an agent patches in place with the `edit`
-  tool it already uses on source. A document a human can read mid-run — and edit
-  mid-run — beats a config tree only the harness can resolve.
+  because there is no cap to reach. Theirs is not a metaphor: `configs/*.yaml`
+  carries 53 keys that are a clock or a cap — 19 `*timeout*`, four of them a
+  second `*_grace_seconds` layered on the first, and 34 maxima, from
+  `run_timeout_seconds: 21600` and `max_idea_cycles: 20` down to
+  `max_program_evals_per_attempt: 4` and `max_idea_generation_attempts: 2`. A
+  budget is somebody else's decision about how long this experiment deserves; a
+  deterministic evaluator and a cancellable run are enough. The circpack
+  evaluator is off the clock by assertion rather than by name —
+  `test_the_evaluator_is_stdlib_only_and_off_the_clock` parses its imports and
+  fails on any of `BANNED_IMPORTS` (`signal`, `threading`, `subprocess`,
+  `socket`, `multiprocessing`, `concurrent`, the network and the numeric
+  libraries), because a clock in the evaluator would be the evaluator deciding
+  how long a scientist is allowed to think.
+* **Hydra override composition.** Hydra is load-bearing over there:
+  `from hydra import compose, initialize_config_dir` in four of their CLIs
+  (`src/pipeline/cli.py`, `src/variants_pipeline/cli.py`,
+  `src/posthoc_pipeline/cli.py`, `src/investigation/config_loader.py`), and
+  re-running one stage of a finished campaign is spelled
+  `python -m src.pipeline.cli task.dir=examples/circpack execution.phases=paper
+  paths.run_dir=results/circpack/claude/20260331_094917/`. The per-run config
+  directory is a composition of task, worker count, skill scope
+  (`SKILLS_BY_STEP` maps `idea` to `create-idea` and
+  `memory-log`, `run` to four skills, `paper` to six) and budget, and the
+  resolved document is something only the harness can read. Ours is one JSON
+  file, `indent=2` with every key always present, that an agent patches in place
+  with the `edit` tool it already uses on source. A document a human can read
+  mid-run — and edit mid-run — beats a config tree nobody can.
 * **Docker per phase.** Their isolation is a container per workspace. Ours is a
   process per role and a working directory per session. The thing that actually
   needed isolating is a candidate that inspects its own grader, and that is
   refused by the brief and checked by the verifier, not by a namespace.
-* **Bash as orchestration.** 1200 lines of shell that stage a config, exec a
+* **Bash as orchestration.** 22,906 lines of shell that stage a config, exec a
   headless CLI and read its exit code. A shell script cannot cancel a turn,
   cannot relay an update, and cannot tell a client which of five agents is
-  speaking. `workflows.py` is 928 lines of Python that does all three.
+  speaking. `workflows.py` is 928 lines of Python that does all three, and the
+  whole of this — the loop, the document, the five prompts, the transports, the
+  client and the CLI — is 4,901 lines across twenty files, importable.
 * **Phases as subprocesses.** Their four stages are four invocations with a
   filesystem between them, so a stage boundary is a place the run can die with
   nobody watching. Here the stages are turns in one loop over one wire, and the
