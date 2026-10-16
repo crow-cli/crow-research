@@ -38,9 +38,6 @@ META_AGENT = "crow/agent"
 #: upstream client the whole orchestration was over, mid-flight.
 DEFAULT_DROP = frozenset({"state_update"})
 
-#: Seconds a cancelled child gets to report its own idle before we let go of it.
-GRACE = 5.0
-
 
 class TurnCancelled(asyncio.CancelledError):
     """Raised inside a workflow when the upstream client cancelled the turn."""
@@ -160,29 +157,29 @@ class Turn:
 
         return relay
 
-    async def run(
-        self, role: Role, text: str, *, timeout: Optional[float] = None, reuse: bool = True
-    ) -> TurnResult:
+    async def run(self, role: Role, text: str, *, reuse: bool = True) -> TurnResult:
         """Hand ``text`` to ``role`` and wait for its turn to end.
 
-        The report comes back; the work went upstream while it happened.
+        The report comes back; the work went upstream while it happened. The
+        wait is unbounded — a turn ends when the child says it is idle, and the
+        only thing that cuts one short is :meth:`cancel`.
         """
         peer = await self.peer(role, reuse=reuse)
         self._check()
         # The race is the cancellation seam. ``peer.send`` ends when the child
-        # says it is idle, which a child that is stuck will never do; the cancel
-        # event ends when the user says stop. Whichever lands first wins, and
-        # when it is the cancel, the child is told too — then given a moment to
-        # report its own cancelled idle so the relay does not cut off mid-word.
-        send = asyncio.ensure_future(peer.send(text, timeout=timeout))
+        # says it is idle; the cancel event ends when the user says stop.
+        # Whichever lands first wins, and when it is the cancel, the child is
+        # told too and then let go of.
+        send = asyncio.ensure_future(peer.send(text))
         stopped = asyncio.ensure_future(self.cancelled.wait())
         done, _ = await asyncio.wait({send, stopped}, return_when=asyncio.FIRST_COMPLETED)
         if send not in done:
             await peer.cancel()
-            with contextlib.suppress(BaseException):
-                await asyncio.wait_for(asyncio.shield(send), timeout=GRACE)
             send.cancel()
             stopped.cancel()
+            for pending in (send, stopped):
+                with contextlib.suppress(BaseException):
+                    await pending
             raise TurnCancelled(f"turn {self.session_id} cancelled during {role.name}")
         stopped.cancel()
         result = send.result()

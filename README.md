@@ -41,10 +41,9 @@ Two guards the first real run taught:
   worker turn *and* a verifier turn on an empty list; a round resumed from the
   file with the work already done would spend a worker turn saying "nothing to
   do" before the verifier ever saw it;
-* when the explorer adds nothing there is no work anywhere in the system, so the
-  loop waits `idle_pause` seconds instead of immediately asking the explorer
-  again. The wait is raced against `turn.cancelled`, because a perpetual loop
-  that ignores `session/cancel` for thirty seconds is a loop that does not stop.
+* nothing in the loop is on a clock. A turn ends when the child ends it; the
+  loop ends when the client cancels it. An explorer that adds nothing is simply
+  asked again, which is what "in perpetuity" means.
 
 ## The todo is the contract, and the contract is a file
 
@@ -139,13 +138,14 @@ The client is `repl_client.py`, a v2 port of crow's
 Positionals are the agent command; the child's own flags go after `--`:
 
 ```sh
-uv run python -m crow_research.repl_client -p "add a Todo.remove(item_id) method with tests" --cancel-after 900 -- python agents/orchestrator_agent.py --model glm-5.3-flash --debug
+uv run python -m crow_research.repl_client -p "add a Todo.remove(item_id) method with tests" -- python agents/orchestrator_agent.py --model glm-5.3-flash --debug
 ```
 
-`--cancel-after` is how a run ends: it sends `session/cancel` N seconds in,
-because the loop has no other exit. Without `-p` you get an interactive REPL;
-inbound `_meta` renders a rich rule per speaking role, so the stream reads as
-Worker, then Verifier, then Explorer.
+A run ends when you end it: Ctrl-C sends `session/cancel`, which is the only
+exit the loop has. Without `-p` you get an interactive REPL, where Ctrl-C
+cancels the turn in flight and Ctrl-D exits; inbound `_meta` renders a rich
+rule per speaking role, so the stream reads as Worker, then Verifier, then
+Explorer.
 
 The generic CLI is still there for pointing the orchestrator at agents that are
 not the specialized cast:
@@ -216,10 +216,10 @@ lazily, inside `_tool_supply`.
 | module | what it is |
 |---|---|
 | `agent.py` | `OrchestratorAgent(workflow, name=, title=, version=, default_cwd=, autostart=, mcp_servers=)` — a v2 agent upstream whose react loop is the workflow you pass in. `prompt` acks with a `message_id`, echoes the user message, and runs the workflow as a task; the task is shielded so even a cancelled turn writes its own `idle`. One foreground turn per session. |
-| `turn.py` | `Turn` — the workflow's whole world: `emit`/`say`/`notice` upstream, `peer`/`run` downstream, `cancelled` for the seams. Peers are registered before `start` so a cancel can reach them; `run` races the child against the cancel and gives it `GRACE` to report its own cancelled idle. Child `state_update`s stay downstream by default. |
+| `turn.py` | `Turn` — the workflow's whole world: `emit`/`say`/`notice` upstream, `peer`/`run` downstream, `cancelled` for the seams. Peers are registered before `start` so a cancel can reach them; `run` races the child against the cancel and lets go of it when the cancel wins. Child `state_update`s stay downstream by default. |
 | `peer.py` | `Peer` — one downstream agent: connect, handshake, session, turn, cancel, teardown. `PeerClient` records updates and folds running→idle into a per-session stop queue registered *before* the send, auto-allows permissions, declines elicitation. `TurnResult` is what a step produced; `.report` is what a handoff carries. |
 | `todo.py` | `Item`, `Todo` (`add`/`extend`/`set`/`remove`/`get`/`pending`/`complete`/`render`/`in`), the document (`to_dict`/`from_dict`, validating) and the file (`load`/`save`, atomic). `STATE_FILE` and `state_path(cwd)`. |
-| `workflows.py` | `pipeline(worker, verifier, explorer, todo, *, timeout=, max_review=5, announce=, idle_pause=30.0, state_path=)` — the loop — plus its three prompt templates, `STATE_SCHEMA` and `STATE_RULES` (the file contract every agent is shown), and the older `single`/`chain`/`rounds`/`forever`/`select`. |
+| `workflows.py` | `pipeline(worker, verifier, explorer, todo, *, max_review=5, announce=, state_path=)` — the loop — plus its three prompt templates, `STATE_SCHEMA` and `STATE_RULES` (the file contract every agent is shown), and the older `single`/`chain`/`rounds`/`forever`/`select`. |
 | `roles.py` | `Role(name, brief, endpoint, title, model, handoff, env)` and `resolve("name=endpoint")`. A brief is one sentence of handoff framing; the character lives in the agent file. `researcher` is defined and has no agent file yet. |
 | `prompts.py` | `sections`, `patch_section`, `insert_section`, `role_prompt` — how a role specializes crow's system prompt. |
 | `mcp.py` | config `mcpServers` → v2 wire models (`stdio_server`, `http_server`, `from_map`, `from_config`). Malformed entries raise; nothing is silently skipped. |
@@ -236,7 +236,7 @@ that, with a todo file it reads back after every turn:
 ```python
 from crow_research import EXPLORER, OrchestratorAgent, Todo, VERIFIER, WORKER, pipeline, state_path
 
-agent = OrchestratorAgent(pipeline(WORKER, VERIFIER, EXPLORER, Todo(), idle_pause=30.0))
+agent = OrchestratorAgent(pipeline(WORKER, VERIFIER, EXPLORER, Todo()))
 ```
 
 Anything else works too, and rounds are just recursion:

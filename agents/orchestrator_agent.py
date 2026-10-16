@@ -88,7 +88,7 @@ def build(args: argparse.Namespace) -> OrchestratorAgent:
     # ``session/prompt`` seeds it. The ``Todo()`` is the seed a Python caller
     # supplies instead, and it is empty here.
     return OrchestratorAgent(
-        workflows.pipeline(worker, verifier, explorer, Todo(), timeout=args.timeout),
+        workflows.pipeline(worker, verifier, explorer, Todo()),
         name=args.name,
         title=args.title,
         mcp_servers=None,  # None -> crow's own configured tool supply, per child
@@ -98,7 +98,6 @@ def build(args: argparse.Namespace) -> OrchestratorAgent:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"model every agent runs on (default {DEFAULT_MODEL})")
-    parser.add_argument("--timeout", type=float, default=None, help="seconds to wait for one agent's turn")
     parser.add_argument("--name", default="crow-research")
     parser.add_argument("--title", default="Crow Research Pipeline")
     parser.add_argument("--debug", action="store_true", help="log to stderr (the parent client drains it)")

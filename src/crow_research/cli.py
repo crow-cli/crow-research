@@ -35,8 +35,6 @@ def serve_argv(args: argparse.Namespace) -> list[str]:
     argv = [sys.executable, "-m", "crow_research", "serve", "--workflow", args.workflow]
     for spec in args.role:
         argv += ["--role", spec]
-    if args.timeout is not None:
-        argv += ["--timeout", str(args.timeout)]
     if args.compact:
         argv += ["--compact"]
     if args.rounds is not None:
@@ -51,9 +49,9 @@ def build_workflow(args: argparse.Namespace) -> Workflow:
     roles = [resolve(spec, cwd=args.cwd) for spec in args.role] or [
         BUILTIN[name] for name in DEFAULT_CHAIN
     ]
-    common = {"timeout": args.timeout, "compact": args.compact}
+    common = {"compact": args.compact}
     if args.workflow == "single":
-        inner: Workflow = workflows.single(roles[0], timeout=args.timeout)
+        inner: Workflow = workflows.single(roles[0])
     elif args.workflow == "chain":
         inner = workflows.chain(*roles, **common)
     elif args.workflow == "pipeline":
@@ -67,7 +65,6 @@ def build_workflow(args: argparse.Namespace) -> Workflow:
         # puts it under the working directory the session was opened on.
         inner = workflows.pipeline(
             by["worker"], by["verifier"], by["explorer"], Todo(),
-            timeout=args.timeout, idle_pause=args.idle_pause,
             state_path=state_path(args.cwd) if args.cwd else None,
         )
     else:
@@ -117,7 +114,7 @@ async def _run(args: argparse.Namespace) -> int:
     peer = Peer(role, client_factory=Printer)
     await peer.start(args.cwd or os.getcwd())
     try:
-        result = await peer.send(args.prompt, timeout=args.timeout)
+        result = await peer.send(args.prompt)
         print(f"\n— stop: {result.stop_reason} · {len(result.updates)} updates relayed")
         return 0 if result.stop_reason in (None, "end_turn") else 1
     finally:
@@ -143,11 +140,8 @@ def parser() -> argparse.ArgumentParser:
             metavar="NAME[=ENDPOINT]",
             help=f"cast a role; endpoint is an argv, ws:// or http:// url. known: {', '.join(BUILTIN)}",
         )
-        p.add_argument("--timeout", type=float, default=None, help="seconds to wait for one agent's turn")
         p.add_argument("--compact", action="store_true", help="ask each agent for an interagent summary to hand off")
         p.add_argument("--rounds", type=int, default=None, help="repeat the workflow N times (-1 = forever)")
-        p.add_argument("--idle-pause", type=float, default=30.0,
-                       help="seconds to wait when the pipeline has no work and the explorer added none")
         p.add_argument("--cwd", default=None,
                        help="working directory for role endpoints and for the pipeline's state file "
                             "(default: the session's own)")

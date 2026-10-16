@@ -207,13 +207,12 @@ class ReplClient:
             self.stderr.append(line.decode(errors="replace"))
             del self.stderr[:-200]
 
-    async def send(self, prompt_text: str, *, timeout: Optional[float] = None) -> Optional[str]:
+    async def send(self, prompt_text: str) -> Optional[str]:
         """Send one prompt to the workflow and wait for the turn to end.
 
-        Returns the stop reason. ``timeout`` bounds the wait only — a pipeline
-        that runs in perpetuity never goes idle on its own, so a bounded wait
-        that ends in a timeout is the normal way to stop watching one, and
-        :meth:`cancel` is how you stop the work.
+        Returns the stop reason. The wait is unbounded: a pipeline that runs in
+        perpetuity never goes idle on its own, and :meth:`cancel` — the
+        ``session/cancel`` the user asks for — is the only thing that ends it.
         """
         if not self._started:
             await self.start()
@@ -230,10 +229,15 @@ class ReplClient:
         await self._conn.prompt(
             session_id=self._session_id, prompt=[v2.schema.TextContentBlock(text=prompt_text)]
         )
-        try:
-            await asyncio.wait_for(self._idle.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            self.console.print(f"\n[yellow]still running after {timeout}s[/yellow]")
+        return await self.wait()
+
+    async def wait(self) -> Optional[str]:
+        """Wait for the in-flight turn to end and return its stop reason.
+
+        Split out of :meth:`send` so a caller that has just sent
+        ``session/cancel`` can still collect the turn it interrupted.
+        """
+        await self._idle.wait()
         if self._response_buffer or self._thinking_buffer:
             self.conversation[self._session_id].append(
                 {"role": "assistant", "content": self._response_buffer,
@@ -367,9 +371,6 @@ async def _amain(argv: list[str]) -> int:
     parser.add_argument("-p", "--prompt", default=None,
                         help="send one prompt to the workflow and exit; omit for an interactive REPL")
     parser.add_argument("--cwd", default=None, help="working directory for the agent session")
-    parser.add_argument("--timeout", type=float, default=None, help="seconds to wait for the turn to end")
-    parser.add_argument("--cancel-after", type=float, default=None,
-                        help="send session/cancel this many seconds in — how you stop a perpetual pipeline")
     parser.add_argument("--quiet", action="store_true", help="no rendering; conversation only")
     args = parser.parse_args(argv)
     agent = args.command or [str(DEFAULT_AGENT)]
@@ -377,11 +378,14 @@ async def _amain(argv: list[str]) -> int:
     prompt = args.prompt or (None if sys.stdin.isatty() else sys.stdin.read().strip())
     try:
         if prompt:
-            task = asyncio.ensure_future(client.send(prompt, timeout=args.timeout))
-            if args.cancel_after:
-                await asyncio.sleep(args.cancel_after)
+            # No clock stops a perpetual pipeline; the user does. Ctrl-C is
+            # ``session/cancel``, which is the seam the spec names.
+            try:
+                stop = await client.send(prompt)
+            except KeyboardInterrupt:
+                print("\ncancelling...")
                 await client.cancel()
-            stop = await task
+                stop = await client.wait()
             print(f"stop_reason: {stop}")
         else:
             await client.repl()

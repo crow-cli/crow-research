@@ -20,7 +20,6 @@ at the bottom.
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, Sequence
 
@@ -40,23 +39,18 @@ COMPACT_PROMPT = (
 )
 
 
-def single(role: Role, *, timeout: Optional[float] = None) -> Workflow:
+def single(role: Role) -> Workflow:
     """Hand the user's prompt to one role and relay what it does."""
 
     async def workflow(turn: Turn) -> Optional[str]:
         await turn.notice(f"{role.label} starting", description=turn.prompt[:200])
-        result = await turn.run(role, turn.prompt, timeout=timeout)
+        result = await turn.run(role, turn.prompt)
         return result.stop_reason
 
     return workflow
 
 
-def chain(
-    *roles: Role,
-    timeout: Optional[float] = None,
-    compact: bool = False,
-    announce: bool = True,
-) -> Workflow:
+def chain(*roles: Role, compact: bool = False, announce: bool = True) -> Workflow:
     """Run the roles in order, each handed the previous one's report.
 
     The first role gets the user's prompt verbatim (with its brief prepended);
@@ -80,10 +74,10 @@ def chain(
                     description=None if index == 0 else f"handing off from {previous}",
                 )
             text = role.assignment(task=task, report=report, previous=previous)
-            result = await turn.run(role, text, timeout=timeout)
+            result = await turn.run(role, text)
             last = result.stop_reason
             if compact:
-                summary = await turn.run(role, COMPACT_PROMPT, timeout=timeout)
+                summary = await turn.run(role, COMPACT_PROMPT)
                 report = summary.report or result.report
             else:
                 report = result.report
@@ -93,7 +87,7 @@ def chain(
     return workflow
 
 
-def rounds(inner: Workflow, count: int, *, pause: float = 0.0) -> Workflow:
+def rounds(inner: Workflow, count: int) -> Workflow:
     """Run ``inner`` ``count`` times in one turn. ``count < 0`` means forever —
     the always-on shape, which ends only when the client cancels it."""
 
@@ -104,16 +98,14 @@ def rounds(inner: Workflow, count: int, *, pause: float = 0.0) -> Workflow:
             turn._check()
             stop = await inner(turn)
             done += 1
-            if pause:
-                await asyncio.sleep(pause)
         return stop
 
     return workflow
 
 
-def forever(inner: Workflow, *, pause: float = 0.0) -> Workflow:
+def forever(inner: Workflow) -> Workflow:
     """``rounds(inner, -1)`` — the loop that does not stop by itself."""
-    return rounds(inner, -1, pause=pause)
+    return rounds(inner, -1)
 
 
 def select(
@@ -338,10 +330,8 @@ def pipeline(
     explorer: Role,
     todo: Todo,
     *,
-    timeout: Optional[float] = None,
     max_review: int = 5,
     announce: bool = True,
-    idle_pause: float = 30.0,
     state_path: Optional[Path] = None,
 ) -> Workflow:
     """The loop: worker -> verifier until sign-off on a complete list, then the
@@ -367,11 +357,9 @@ def pipeline(
     dispatched only when there is something to claim, so a resumed round goes
     straight to the verifier.
 
-    ``idle_pause`` is what keeps a perpetual loop from becoming a hot one: when
-    the explorer adds nothing there is no work anywhere in the system, so the
-    next round would immediately ask the explorer again. It waits instead — and
-    the wait is cut short by a cancel, because a loop that ignores
-    ``session/cancel`` for thirty seconds is a loop that does not stop.
+    Nothing in here is on a clock. A turn ends when the child ends it and the
+    loop ends when the client cancels it — an explorer that adds nothing simply
+    gets asked again, which is what "in perpetuity" means.
     """
 
     async def workflow(turn: Turn) -> Optional[str]:
@@ -420,7 +408,6 @@ def pipeline(
                             schema=STATE_SCHEMA,
                             rules=STATE_RULES,
                         ),
-                        timeout=timeout,
                     )
                     last = worker_result.stop_reason
                     worker_report = worker_result.report
@@ -437,7 +424,6 @@ def pipeline(
                         path=path, todo=state.render(), report=_report_block(worker_report),
                         schema=STATE_SCHEMA, rules=STATE_RULES,
                     ),
-                    timeout=timeout,
                 )
                 last = verifier_result.stop_reason
                 state, moved = await _reload(turn, path, state)
@@ -462,7 +448,6 @@ def pipeline(
                     report=_findings_block(verifier_report), me=explorer.name,
                     schema=STATE_SCHEMA, rules=STATE_RULES,
                 ),
-                timeout=timeout,
             )
             last = explorer_result.stop_reason
             state, moved = await _reload(turn, path, state)
@@ -478,11 +463,5 @@ def pipeline(
             # next round's verifier overwrites it; the orchestrator writing null
             # over an agent's key would be the orchestrator doing the work.
             verifier_report = ""
-            if not added and idle_pause:
-                try:
-                    await asyncio.wait_for(turn.cancelled.wait(), timeout=idle_pause)
-                except asyncio.TimeoutError:
-                    pass
-                turn._check()
 
     return workflow

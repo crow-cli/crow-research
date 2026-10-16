@@ -37,14 +37,13 @@ def stub(name: str) -> str:
     return f"{name}={shlex.quote(sys.executable)} {shlex.quote(str(STUB))} {name}"
 
 
-def serve_pipeline(cwd: str, *, idle_pause: float = 0.2) -> list[str]:
+def serve_pipeline(cwd: str) -> list[str]:
     return [
         sys.executable, "-m", "crow_research", "serve",
         "--workflow", "pipeline",
         "--role", stub("worker"),
         "--role", stub("verifier"),
         "--role", stub("explorer"),
-        "--idle-pause", str(idle_pause),
         "--cwd", cwd,
     ]
 
@@ -80,7 +79,7 @@ async def run_until(peer: Peer, prompt: str, predicate, *, limit: float = 90.0) 
     test drives it by watching the stream and ending the turn with the same
     ``session/cancel`` a user would.
     """
-    sent = asyncio.create_task(peer.send(prompt, timeout=limit))
+    sent = asyncio.create_task(peer.send(prompt))
     deadline = asyncio.get_running_loop().time() + limit
     while asyncio.get_running_loop().time() < deadline:
         if predicate(peer.client):

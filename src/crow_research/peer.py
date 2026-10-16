@@ -184,12 +184,8 @@ class Peer:
             self.stderr.append(line.decode(errors="replace"))
             del self.stderr[:-STDERR_LINES]
 
-    async def send(self, text: str, *, timeout: Optional[float] = None) -> TurnResult:
-        """One turn: send the prompt, watch for the idle, return what happened.
-
-        ``timeout`` bounds the wait, not the child — on expiry the turn is still
-        running downstream and :meth:`wait` can pick it back up.
-        """
+    async def send(self, text: str) -> TurnResult:
+        """One turn: send the prompt, watch for the idle, return what happened."""
         if self.session_id is None:
             raise RuntimeError(f"peer {self.role.name} was never started")
         self.turn = TurnResult()
@@ -197,29 +193,32 @@ class Peer:
         await self.conn.prompt(
             session_id=self.session_id, prompt=[v2.schema.TextContentBlock(text=text)]
         )
-        await self.wait(timeout=timeout)
+        await self.wait()
         return self.turn
 
-    async def wait(self, *, timeout: Optional[float] = None) -> Optional[str]:
-        """Wait for the in-flight turn to end. Returns its stop reason."""
+    async def wait(self) -> Optional[str]:
+        """Wait for the in-flight turn to end. Returns its stop reason.
+
+        Unbounded on purpose: the only ways out are the child going idle or the
+        child dying. Stopping a turn that is still running is
+        :meth:`cancel`'s job, not a clock's.
+        """
         stops = self.client.watch(self.session_id)
         stop = asyncio.ensure_future(stops.get())
         died = asyncio.ensure_future(self._exited())
-        done, _ = await asyncio.wait({stop, died}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait({stop, died}, return_when=asyncio.FIRST_COMPLETED)
         if stop in done:
             died.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await died
             self.turn.stop_reason = stop.result()
             return self.turn.stop_reason
+        # ``FIRST_COMPLETED`` with no clock means the child died first.
         stop.cancel()
-        died.cancel()
         for pending in (stop, died):
             with contextlib.suppress(asyncio.CancelledError):
                 await pending
-        if died.done() and not died.cancelled():
-            raise PeerExited(self._exit_note())
-        raise TimeoutError(f"peer {self.role.name} did not end its turn within {timeout}s")
+        raise PeerExited(self._exit_note())
 
     async def _exited(self) -> None:
         proc = getattr(self._link, "proc", None)

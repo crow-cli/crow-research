@@ -83,7 +83,7 @@ async def drive(argv: list[str], prompt: str, *, delay: float = 0.0) -> tuple[Re
     try:
         if delay:
             await asyncio.sleep(delay)
-        result = await peer.send(prompt, timeout=60)
+        result = await peer.send(prompt)
         return peer.client, result  # type: ignore[return-value]
     finally:
         await peer.close()
@@ -120,7 +120,7 @@ async def test_cancel_ends_the_turn_and_reports_it() -> None:
         )
         await peer.start(os.getcwd())
         try:
-            sent = asyncio.create_task(peer.send("something slow", timeout=60))
+            sent = asyncio.create_task(peer.send("something slow"))
             # Wait until the orchestrator has the turn in flight, then cancel it.
             for _ in range(200):
                 if any(k == "state_update" for k, _, _ in peer.client.events):
